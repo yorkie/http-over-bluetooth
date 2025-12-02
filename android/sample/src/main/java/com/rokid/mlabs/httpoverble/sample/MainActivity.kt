@@ -33,6 +33,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "HttpOverBleSample"
+        private const val BODY_PREVIEW_MAX_LENGTH = 200
     }
 
     private lateinit var statusTextView: TextView
@@ -285,7 +286,7 @@ class MainActivity : AppCompatActivity() {
 
         override fun onResponseReceived(response: HttpResponse) {
             val bodyPreview = response.body?.let { 
-                String(it, Charsets.UTF_8).take(200) 
+                String(it, Charsets.UTF_8).take(BODY_PREVIEW_MAX_LENGTH) 
             } ?: "(empty)"
             appendLog("Response received: ${response.statusCode}")
             appendLog("Body preview: $bodyPreview")
