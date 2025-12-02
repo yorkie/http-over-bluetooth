@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">HTTP Over Bluetooth Sample</string>
+    <string name="log_area_description">Activity log scroll area</string>
+    <string name="log_content_description">Activity log messages</string>
+</resources>

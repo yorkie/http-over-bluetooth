@@ -38,15 +38,26 @@ dependencies {
 }
 ```
 
+### Sample App
+
+A sample Android app is included in the `android/sample` directory. The sample demonstrates:
+- Running as a BLE server that receives HTTP requests from clients and executes them
+- Running as a BLE client that scans for and connects to BLE servers, then sends HTTP requests
+
+To run the sample:
+1. Open the `android` folder in Android Studio
+2. Select the `sample` configuration
+3. Run on a device with Bluetooth LE support
+
 ### Client Usage
 
 ```kotlin
-import com.example.httpoverble.client.HttpOverBleClient
-import com.example.httpoverble.client.HttpOverBleClientCallback
-import com.example.httpoverble.client.HttpOverBleError
-import com.example.httpoverble.common.HttpMethod
-import com.example.httpoverble.common.HttpRequest
-import com.example.httpoverble.common.HttpResponse
+import com.rokid.mlabs.httpoverble.client.HttpOverBleClient
+import com.rokid.mlabs.httpoverble.client.HttpOverBleClientCallback
+import com.rokid.mlabs.httpoverble.client.HttpOverBleError
+import com.rokid.mlabs.httpoverble.common.HttpMethod
+import com.rokid.mlabs.httpoverble.common.HttpRequest
+import com.rokid.mlabs.httpoverble.common.HttpResponse
 
 class MainActivity : AppCompatActivity(), HttpOverBleClientCallback {
     
@@ -103,11 +114,11 @@ class MainActivity : AppCompatActivity(), HttpOverBleClientCallback {
 ### Server Usage
 
 ```kotlin
-import com.example.httpoverble.server.HttpOverBleServer
-import com.example.httpoverble.server.HttpOverBleServerCallback
-import com.example.httpoverble.server.HttpOverBleServerError
-import com.example.httpoverble.common.HttpRequest
-import com.example.httpoverble.common.HttpResponse
+import com.rokid.mlabs.httpoverble.server.HttpOverBleServer
+import com.rokid.mlabs.httpoverble.server.HttpOverBleServerCallback
+import com.rokid.mlabs.httpoverble.server.HttpOverBleServerError
+import com.rokid.mlabs.httpoverble.common.HttpRequest
+import com.rokid.mlabs.httpoverble.common.HttpResponse
 
 class ServerActivity : AppCompatActivity(), HttpOverBleServerCallback {
     

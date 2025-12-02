@@ -1,7 +1,7 @@
-package com.example.httpoverble.client
+package com.rokid.mlabs.httpoverble.client
 
-import com.example.httpoverble.common.HttpRequest
-import com.example.httpoverble.common.HttpResponse
+import com.rokid.mlabs.httpoverble.common.HttpRequest
+import com.rokid.mlabs.httpoverble.common.HttpResponse
 
 /**
  * Callback interface for HTTP over BLE client operations.

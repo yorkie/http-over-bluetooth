@@ -1,4 +1,4 @@
-package com.example.httpoverble.common
+package com.rokid.mlabs.httpoverble.common
 
 /**
  * Represents an HTTP request to be sent over BLE.

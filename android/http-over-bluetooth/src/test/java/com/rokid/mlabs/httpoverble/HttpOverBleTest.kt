@@ -1,9 +1,9 @@
-package com.example.httpoverble
+package com.rokid.mlabs.httpoverble
 
-import com.example.httpoverble.common.HttpMethod
-import com.example.httpoverble.common.HttpProxyServiceConstants
-import com.example.httpoverble.common.HttpRequest
-import com.example.httpoverble.common.HttpResponse
+import com.rokid.mlabs.httpoverble.common.HttpMethod
+import com.rokid.mlabs.httpoverble.common.HttpProxyServiceConstants
+import com.rokid.mlabs.httpoverble.common.HttpRequest
+import com.rokid.mlabs.httpoverble.common.HttpResponse
 import org.junit.Assert.*
 import org.junit.Test
 

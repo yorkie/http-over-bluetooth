@@ -1,4 +1,4 @@
-package com.example.httpoverble.common
+package com.rokid.mlabs.httpoverble.common
 
 /**
  * Represents an HTTP response received over BLE.
