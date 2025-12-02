@@ -1,0 +1,37 @@
+# Android
+android/.gradle/
+android/build/
+android/*/build/
+android/local.properties
+android/*.iml
+android/.idea/
+android/captures/
+
+# iOS
+ios/HTTPOverBluetooth/.build/
+ios/HTTPOverBluetooth/.swiftpm/
+ios/HTTPOverBluetooth/Package.resolved
+ios/*.xcworkspace/
+ios/*.xcodeproj/xcuserdata/
+ios/DerivedData/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# macOS
+.DS_Store
+*.swp
+
+# Gradle
+.gradle/
+gradle-app.setting
+!gradle-wrapper.jar
+
+# Build outputs
+build/
+out/
+
+# Local configuration
+local.properties
