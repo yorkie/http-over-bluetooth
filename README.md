@@ -41,12 +41,12 @@ dependencies {
 ### Client Usage
 
 ```kotlin
-import com.example.httpoverble.client.HttpOverBleClient
-import com.example.httpoverble.client.HttpOverBleClientCallback
-import com.example.httpoverble.client.HttpOverBleError
-import com.example.httpoverble.common.HttpMethod
-import com.example.httpoverble.common.HttpRequest
-import com.example.httpoverble.common.HttpResponse
+import com.rokid.mlabs.httpoverble.client.HttpOverBleClient
+import com.rokid.mlabs.httpoverble.client.HttpOverBleClientCallback
+import com.rokid.mlabs.httpoverble.client.HttpOverBleError
+import com.rokid.mlabs.httpoverble.common.HttpMethod
+import com.rokid.mlabs.httpoverble.common.HttpRequest
+import com.rokid.mlabs.httpoverble.common.HttpResponse
 
 class MainActivity : AppCompatActivity(), HttpOverBleClientCallback {
     
@@ -103,11 +103,11 @@ class MainActivity : AppCompatActivity(), HttpOverBleClientCallback {
 ### Server Usage
 
 ```kotlin
-import com.example.httpoverble.server.HttpOverBleServer
-import com.example.httpoverble.server.HttpOverBleServerCallback
-import com.example.httpoverble.server.HttpOverBleServerError
-import com.example.httpoverble.common.HttpRequest
-import com.example.httpoverble.common.HttpResponse
+import com.rokid.mlabs.httpoverble.server.HttpOverBleServer
+import com.rokid.mlabs.httpoverble.server.HttpOverBleServerCallback
+import com.rokid.mlabs.httpoverble.server.HttpOverBleServerError
+import com.rokid.mlabs.httpoverble.common.HttpRequest
+import com.rokid.mlabs.httpoverble.common.HttpResponse
 
 class ServerActivity : AppCompatActivity(), HttpOverBleServerCallback {
     

@@ -1,9 +1,9 @@
 # Consumer ProGuard rules
 # Keep HTTP over BLE public API
--keep class com.example.httpoverble.client.HttpOverBleClient { *; }
--keep class com.example.httpoverble.client.HttpOverBleClientCallback { *; }
--keep class com.example.httpoverble.client.HttpOverBleError { *; }
--keep class com.example.httpoverble.server.HttpOverBleServer { *; }
--keep class com.example.httpoverble.server.HttpOverBleServerCallback { *; }
--keep class com.example.httpoverble.server.HttpOverBleServerError { *; }
--keep class com.example.httpoverble.common.** { *; }
+-keep class com.rokid.mlabs.httpoverble.client.HttpOverBleClient { *; }
+-keep class com.rokid.mlabs.httpoverble.client.HttpOverBleClientCallback { *; }
+-keep class com.rokid.mlabs.httpoverble.client.HttpOverBleError { *; }
+-keep class com.rokid.mlabs.httpoverble.server.HttpOverBleServer { *; }
+-keep class com.rokid.mlabs.httpoverble.server.HttpOverBleServerCallback { *; }
+-keep class com.rokid.mlabs.httpoverble.server.HttpOverBleServerError { *; }
+-keep class com.rokid.mlabs.httpoverble.common.** { *; }

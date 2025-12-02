@@ -1,4 +1,4 @@
-package com.example.httpoverble.client
+package com.rokid.mlabs.httpoverble.client
 
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
@@ -18,9 +18,9 @@ import android.content.Context
 import android.os.Build
 import android.os.ParcelUuid
 import android.util.Log
-import com.example.httpoverble.common.HttpProxyServiceConstants
-import com.example.httpoverble.common.HttpRequest
-import com.example.httpoverble.common.HttpResponse
+import com.rokid.mlabs.httpoverble.common.HttpProxyServiceConstants
+import com.rokid.mlabs.httpoverble.common.HttpRequest
+import com.rokid.mlabs.httpoverble.common.HttpResponse
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob

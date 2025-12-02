@@ -3,8 +3,8 @@
 # proguardFiles setting in build.gradle.
 
 # Keep HTTP over BLE classes
--keep class com.example.httpoverble.** { *; }
--keepclassmembers class com.example.httpoverble.** { *; }
+-keep class com.rokid.mlabs.httpoverble.** { *; }
+-keepclassmembers class com.rokid.mlabs.httpoverble.** { *; }
 
 # OkHttp
 -dontwarn okhttp3.**
