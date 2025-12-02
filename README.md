@@ -38,6 +38,17 @@ dependencies {
 }
 ```
 
+### Sample App
+
+A sample Android app is included in the `android/sample` directory. The sample demonstrates:
+- Running as a BLE server that receives HTTP requests from clients and executes them
+- Running as a BLE client that scans for and connects to BLE servers, then sends HTTP requests
+
+To run the sample:
+1. Open the `android` folder in Android Studio
+2. Select the `sample` configuration
+3. Run on a device with Bluetooth LE support
+
 ### Client Usage
 
 ```kotlin
