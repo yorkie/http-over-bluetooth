@@ -8,6 +8,23 @@ This desktop application consists of two parts:
 - **Backend Server (Node.js)**: Implements the BLE Peripheral using `@abandonware/bleno` and provides the HTTP Proxy Service
 - **Frontend (Vue.js)**: Provides a user interface to start/stop the HPS service, view logs, and test HTTP requests
 
+## Features
+
+### User Interface
+- **Server Status Dashboard**: Real-time display of server state, Bluetooth status, advertising state, and connected clients
+- **One-Click Controls**: Easy start/stop buttons for the HPS service
+- **Live Log Viewer**: Color-coded, real-time logs showing all BLE and HTTP activity
+- **HTTP Test Form**: Built-in form to test HTTP requests directly from the UI
+- **Responsive Design**: Modern, gradient-themed interface that works on different screen sizes
+
+### Backend Capabilities
+- **Full HPS 1.0 Implementation**: Complete Bluetooth HTTP Proxy Service specification support
+- **All HTTP Methods**: GET, POST, PUT, DELETE, HEAD support for both HTTP and HTTPS
+- **Automatic Request Execution**: Receives BLE requests and executes actual HTTP/HTTPS calls
+- **Real-time Notifications**: BLE characteristic notifications for status updates
+- **Multi-Client Support**: Handle multiple connected BLE clients simultaneously
+- **Robust Error Handling**: Graceful error handling and reporting
+
 ## Architecture
 
 ```
