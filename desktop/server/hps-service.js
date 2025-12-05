@@ -197,7 +197,18 @@ export class HttpProxyService {
             // Store response
             this.statusCode = response.status;
             this.responseHeaders = response.headers || {};
-            this.responseBody = Buffer.from(response.data || '');
+            
+            // Convert response data to Buffer, handling different types
+            if (Buffer.isBuffer(response.data)) {
+                this.responseBody = response.data;
+            } else if (typeof response.data === 'string') {
+                this.responseBody = Buffer.from(response.data, 'utf8');
+            } else if (response.data !== null && response.data !== undefined) {
+                this.responseBody = Buffer.from(JSON.stringify(response.data), 'utf8');
+            } else {
+                this.responseBody = Buffer.alloc(0);
+            }
+            
             this.certificateValidated = this.isHttps; // Simplified
             
             this.log(`Response received: ${this.statusCode}`);
@@ -258,9 +269,11 @@ export class HttpProxyService {
     
     serializeStatusCode(statusCode) {
         // Status code is encoded as 16-bit little-endian unsigned integer
+        // Clamp to valid range [0, 65535]
+        const code = Math.max(0, Math.min(65535, statusCode));
         return Buffer.from([
-            statusCode & 0xFF,
-            (statusCode >> 8) & 0xFF
+            code & 0xFF,
+            (code >> 8) & 0xFF
         ]);
     }
     

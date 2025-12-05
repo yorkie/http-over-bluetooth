@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import bleno from '@abandonware/bleno';
+import axios from 'axios';
 import { HttpProxyService } from './hps-service.js';
 
 const app = express();
@@ -202,7 +203,6 @@ app.post('/api/test-request', async (req, res) => {
         
         addLog(`Test request: ${method} ${url}`, 'info');
         
-        const axios = (await import('axios')).default;
         const response = await axios({
             method: method.toLowerCase(),
             url,
