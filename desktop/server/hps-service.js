@@ -9,7 +9,7 @@ const { Characteristic, Descriptor } = bleno;
  * This service allows BLE clients to send HTTP requests through this server.
  */
 export class HttpProxyService {
-    constructor() {
+    constructor(options = {}) {
         // Request state
         this.uri = '';
         this.headers = {};
@@ -19,6 +19,7 @@ export class HttpProxyService {
         this.responseBody = null;
         this.isHttps = false;
         this.certificateValidated = false;
+        this.deviceName = options.deviceName || 'HPS Server';
         
         // Notification state
         this.statusCodeUpdateCallback = null;
@@ -29,6 +30,9 @@ export class HttpProxyService {
         this.onError = null;
         
         this.initializeCharacteristics();
+    }
+    getDeviceName() {
+        return this.deviceName;
     }
     
     initializeCharacteristics() {
@@ -56,6 +60,7 @@ export class HttpProxyService {
                 try {
                     const headersString = this.serializeHeaders(this.responseHeaders);
                     const data = Buffer.from(headersString, 'utf8');
+                    this.log(`Sending headers: ${headersString.length} bytes`);
                     callback(Characteristic.RESULT_SUCCESS, data);
                 } catch (error) {
                     callback(Characteristic.RESULT_UNLIKELY_ERROR);
@@ -77,12 +82,12 @@ export class HttpProxyService {
         this.statusCodeCharacteristic = new Characteristic({
             uuid: HPS.HTTP_STATUS_CODE_CHARACTERISTIC_UUID,
             properties: ['read', 'notify'],
-            descriptors: [
-                new Descriptor({
-                    uuid: '2902', // Client Characteristic Configuration
-                    value: Buffer.alloc(2)
-                })
-            ],
+            // descriptors: [
+            //     new Descriptor({
+            //         uuid: '2902', // Client Characteristic Configuration
+            //         value: Buffer.alloc(2)
+            //     })
+            // ],
             onReadRequest: (offset, callback) => {
                 const data = this.serializeStatusCode(this.statusCode);
                 callback(Characteristic.RESULT_SUCCESS, data);
@@ -104,6 +109,7 @@ export class HttpProxyService {
             onReadRequest: (offset, callback) => {
                 try {
                     const data = this.responseBody || Buffer.alloc(0);
+                    this.log(`Sending body: ${data.length} bytes`);
                     callback(Characteristic.RESULT_SUCCESS, data);
                 } catch (error) {
                     callback(Characteristic.RESULT_UNLIKELY_ERROR);

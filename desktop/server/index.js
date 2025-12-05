@@ -3,6 +3,7 @@ import cors from 'cors';
 import bleno from '@abandonware/bleno';
 import axios from 'axios';
 import { HttpProxyService } from './hps-service.js';
+import * as HPS from './hps-constants.js';
 
 const app = express();
 const PORT = 3000;
@@ -27,7 +28,7 @@ function addLog(message, type = 'info') {
     };
     logs.push(log);
     console.log(`[${type.toUpperCase()}] ${message}`);
-    
+
     // Keep only last 100 logs
     if (logs.length > 100) {
         logs = logs.slice(-100);
@@ -37,7 +38,7 @@ function addLog(message, type = 'info') {
 // Initialize bleno
 bleno.on('stateChange', (state) => {
     addLog(`Bluetooth state changed to: ${state}`, 'info');
-    
+
     if (state === 'poweredOn') {
         addLog('Bluetooth powered on, ready to start advertising', 'success');
     } else {
@@ -56,18 +57,26 @@ bleno.on('advertisingStart', (error) => {
     } else {
         addLog('Started advertising HTTP Proxy Service', 'success');
         isAdvertising = true;
-        
+
         if (hpsService) {
-            bleno.setServices([hpsService.getService()], (error) => {
-                if (error) {
-                    addLog(`Error setting services: ${error.message}`, 'error');
-                } else {
-                    addLog('HTTP Proxy Service registered successfully', 'success');
-                }
-            });
+            setTimeout(() => {
+                bleno.setServices([hpsService.getService()], (error) => {
+                    if (error) {
+                        addLog(`Error setting services: ${error.message}`, 'error');
+                    } else {
+                        addLog('HTTP Proxy Service registered successfully', 'success');
+                    }
+                });
+            }, 1000);
         }
     }
 });
+
+bleno.on('advertisingStartError', (error) => {
+    addLog(`Error starting advertising: ${error.message}`, 'error');
+    isAdvertising = false;
+})
+
 
 bleno.on('advertisingStop', () => {
     addLog('Stopped advertising', 'info');
@@ -118,42 +127,44 @@ app.post('/api/start', (req, res) => {
         if (isServerStarted) {
             return res.status(400).json({ error: 'Server already started' });
         }
-        
+
         if (bleno.state !== 'poweredOn') {
-            return res.status(400).json({ 
+            return res.status(400).json({
                 error: 'Bluetooth not powered on',
                 state: bleno.state
             });
         }
-        
-        // Create HPS service
-        hpsService = new HttpProxyService();
-        
+
+        const { name } = req.body || {};
+        const deviceName = name || process.env.BLUETOOTH_NAME || 'HPS Server';
+        hpsService = new HttpProxyService({ deviceName });
+
         // Set up event handlers
         hpsService.onRequestReceived = (request) => {
             addLog(`Request received: ${request.method} ${request.uri}`, 'info');
         };
-        
+
         hpsService.onResponseSent = (response) => {
             addLog(`Response sent: ${response.statusCode}`, 'success');
         };
-        
+
         hpsService.onError = (error) => {
             addLog(`Error: ${error.message}`, 'error');
         };
-        
-        // Start advertising
-        bleno.startAdvertising('HPS Server', ['1823'], (error) => {
+
+        bleno.startAdvertising(hpsService.getDeviceName(), [HPS.HTTP_PROXY_SERVICE_UUID], (error) => {
             if (error) {
                 addLog(`Error starting advertising: ${error.message}`, 'error');
                 return res.status(500).json({ error: error.message });
+            } else {
+                addLog('Advertising started successfully with service UUID: ' + HPS.HTTP_PROXY_SERVICE_UUID, 'success');
             }
         });
-        
+
         isServerStarted = true;
         addLog('HTTP Proxy Server started', 'success');
-        
-        res.json({ 
+
+        res.json({
             success: true,
             message: 'HPS Server started successfully'
         });
@@ -169,20 +180,22 @@ app.post('/api/stop', (req, res) => {
         if (!isServerStarted) {
             return res.status(400).json({ error: 'Server not started' });
         }
-        
+
         if (isAdvertising) {
             bleno.stopAdvertising();
         }
-        
-        bleno.disconnect();
-        
+
+        if (connectedClients.length > 0) {
+            bleno.disconnect();
+        }
+
         isServerStarted = false;
         hpsService = null;
         connectedClients = [];
-        
+
         addLog('HTTP Proxy Server stopped', 'info');
-        
-        res.json({ 
+
+        res.json({
             success: true,
             message: 'HPS Server stopped successfully'
         });
@@ -196,13 +209,13 @@ app.post('/api/stop', (req, res) => {
 app.post('/api/test-request', async (req, res) => {
     try {
         const { url, method = 'GET', headers = {}, body = null } = req.body;
-        
+
         if (!url) {
             return res.status(400).json({ error: 'URL is required' });
         }
-        
+
         addLog(`Test request: ${method} ${url}`, 'info');
-        
+
         const response = await axios({
             method: method.toLowerCase(),
             url,
@@ -211,9 +224,9 @@ app.post('/api/test-request', async (req, res) => {
             validateStatus: () => true,
             timeout: 30000
         });
-        
+
         addLog(`Test request completed: ${response.status}`, 'success');
-        
+
         res.json({
             statusCode: response.status,
             headers: response.headers,
@@ -237,6 +250,8 @@ process.on('SIGINT', () => {
     if (isAdvertising) {
         bleno.stopAdvertising();
     }
-    bleno.disconnect();
+    if (connectedClients.length > 0) {
+        bleno.disconnect();
+    }
     process.exit();
 });
