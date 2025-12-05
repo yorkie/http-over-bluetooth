@@ -6,10 +6,11 @@ Reference: [Bluetooth HTTP Proxy Service 1.0](https://www.bluetooth.com/specific
 
 ## Overview
 
-This repository provides Android and iOS SDKs that enable:
+This repository provides Android, iOS, and Desktop implementations that enable:
 
 - **Client Mode**: Send HTTP/HTTPS requests via BLE to connected BLE devices
 - **Server Mode**: Receive BLE data from clients, execute actual HTTP/HTTPS requests over WiFi or 5G, and return responses
+- **Desktop Server**: macOS application with Vue.js frontend for testing and development
 
 ## Architecture
 
@@ -343,6 +344,41 @@ class ServerViewController: UIViewController, HTTPOverBLEServerDelegate {
 Enable in Xcode under Signing & Capabilities:
 - Background Modes → Uses Bluetooth LE accessories (for client)
 - Background Modes → Acts as a Bluetooth LE accessory (for server)
+
+## Desktop Server (macOS)
+
+### Requirements
+
+- macOS 10.14 or later
+- Node.js 16 or later
+- Bluetooth LE support
+
+### Installation
+
+```bash
+cd desktop
+npm install
+```
+
+### Usage
+
+Start the desktop server with Vue.js frontend:
+
+```bash
+npm run dev
+```
+
+This will:
+- Start the backend server on `http://localhost:3000`
+- Start the frontend on `http://localhost:5173`
+- Open your browser to the UI
+
+The desktop application provides:
+- **HTTP Proxy Service (BLE Peripheral)**: Acts as a BLE server that mobile clients can connect to
+- **Web UI**: Control panel to start/stop the service, view logs, and test requests
+- **Real-time Monitoring**: View connected clients and request/response activity
+
+For more details, see [desktop/README.md](desktop/README.md).
 
 ## HTTP Proxy Service (HPS) Specification
 

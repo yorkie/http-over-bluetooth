@@ -35,3 +35,12 @@ out/
 
 # Local configuration
 local.properties
+
+# Node.js / Desktop
+desktop/node_modules/
+desktop/dist/
+desktop/frontend/dist/
+desktop/.env
+desktop/npm-debug.log*
+desktop/yarn-debug.log*
+desktop/yarn-error.log*

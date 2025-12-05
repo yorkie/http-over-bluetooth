@@ -374,6 +374,18 @@ class HttpOverBleClient(private val context: Context) {
             bodyCharacteristic = service.getCharacteristic(HttpProxyServiceConstants.HTTP_ENTITY_BODY_CHARACTERISTIC_UUID)
             controlPointCharacteristic = service.getCharacteristic(HttpProxyServiceConstants.HTTP_CONTROL_POINT_CHARACTERISTIC_UUID)
             httpsSecurityCharacteristic = service.getCharacteristic(HttpProxyServiceConstants.HTTPS_SECURITY_CHARACTERISTIC_UUID)
+            val missing = mutableListOf<String>()
+            if (uriCharacteristic == null) missing.add("URI")
+            if (headersCharacteristic == null) missing.add("HTTP_HEADERS")
+            if (statusCodeCharacteristic == null) missing.add("HTTP_STATUS_CODE")
+            if (bodyCharacteristic == null) missing.add("HTTP_ENTITY_BODY")
+            if (controlPointCharacteristic == null) missing.add("HTTP_CONTROL_POINT")
+            if (httpsSecurityCharacteristic == null) missing.add("HTTPS_SECURITY")
+            if (missing.isNotEmpty()) {
+                Log.w(TAG, "Missing HPS characteristics: ${missing.joinToString(", ")}")
+            } else {
+                Log.d(TAG, "All HPS characteristics available")
+            }
             
             // Enable notifications for status code characteristic to receive responses
             statusCodeCharacteristic?.let { characteristic ->

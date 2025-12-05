@@ -187,7 +187,7 @@ class MainActivity : AppCompatActivity() {
         appendLog("Sending test HTTPS request...")
         
         val request = HttpRequest(
-            uri = "https://httpbin.org/get",
+            uri = "https://www-api.rokid.com/api/v1/geocode/regeo?lat=30&lng=120",
             method = HttpMethod.GET,
             headers = mapOf("Accept" to "application/json"),
             isHttps = true
@@ -289,6 +289,7 @@ class MainActivity : AppCompatActivity() {
                 String(it, Charsets.UTF_8).take(BODY_PREVIEW_MAX_LENGTH) 
             } ?: "(empty)"
             appendLog("Response received: ${response.statusCode}")
+            appendLog("Headers: ${response.headers}")
             appendLog("Body preview: $bodyPreview")
         }
 

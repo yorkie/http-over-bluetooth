@@ -1,0 +1,35 @@
+{
+  "name": "http-over-bluetooth-desktop",
+  "version": "1.0.0",
+  "main": "server/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"npm run server\" \"npm run frontend\"",
+    "server": "node server/index.js",
+    "frontend": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "keywords": [
+    "bluetooth",
+    "ble",
+    "http",
+    "proxy",
+    "macos"
+  ],
+  "author": "",
+  "license": "MIT",
+  "description": "HTTP over Bluetooth Desktop Server for macOS",
+  "dependencies": {
+    "@abandonware/bleno": "^0.6.2",
+    "axios": "^1.13.2",
+    "cors": "^2.8.5",
+    "express": "^5.2.1",
+    "vue": "^3.5.25"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.2",
+    "concurrently": "^9.2.1",
+    "vite": "^7.2.6"
+  }
+}
