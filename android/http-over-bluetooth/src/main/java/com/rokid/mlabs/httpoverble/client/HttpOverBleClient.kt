@@ -101,10 +101,12 @@ class HttpOverBleClient(private val context: Context) {
     
     // Write queue for sequential characteristic writes
     private val writeQueue = ConcurrentLinkedQueue<WriteOperation>()
+    @Volatile
     private var isWriting = false
     
     // Read queue for sequential characteristic reads
     private val readQueue = ConcurrentLinkedQueue<BluetoothGattCharacteristic>()
+    @Volatile
     private var isReading = false
     
     private data class WriteOperation(
@@ -323,7 +325,13 @@ class HttpOverBleClient(private val context: Context) {
         val characteristic = readQueue.poll() ?: return
         isReading = true
         
-        bluetoothGatt?.readCharacteristic(characteristic)
+        val success = bluetoothGatt?.readCharacteristic(characteristic) ?: false
+        if (!success) {
+            Log.e(TAG, "Failed to initiate characteristic read: ${characteristic.uuid}")
+            isReading = false
+            // Try next item in queue
+            processReadQueue()
+        }
     }
     
     private fun clearCharacteristics() {
