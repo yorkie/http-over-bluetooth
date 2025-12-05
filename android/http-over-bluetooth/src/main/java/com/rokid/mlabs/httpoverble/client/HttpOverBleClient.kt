@@ -98,7 +98,9 @@ class HttpOverBleClient(private val context: Context) {
     private var pendingBody: ByteArray? = null
     private var pendingHttps: Boolean = false
     private var pendingCertValidated: Boolean = false
+    @Volatile
     private var expectedReadCount: Int = 0
+    @Volatile
     private var completedReadCount: Int = 0
     
     // Write queue for sequential characteristic writes
@@ -533,7 +535,7 @@ class HttpOverBleClient(private val context: Context) {
             }
             
             // Check if we have all response data
-            if (pendingStatusCode > 0 && completedReadCount >= expectedReadCount) {
+            if (pendingStatusCode > 0 && completedReadCount == expectedReadCount && expectedReadCount > 0) {
                 val response = HttpResponse(
                     statusCode = pendingStatusCode,
                     headers = pendingHeaders,
