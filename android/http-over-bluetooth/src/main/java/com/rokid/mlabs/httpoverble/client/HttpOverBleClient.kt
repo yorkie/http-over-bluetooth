@@ -98,6 +98,8 @@ class HttpOverBleClient(private val context: Context) {
     private var pendingBody: ByteArray? = null
     private var pendingHttps: Boolean = false
     private var pendingCertValidated: Boolean = false
+    private var expectedReadCount: Int = 0
+    private var completedReadCount: Int = 0
     
     // Write queue for sequential characteristic writes
     private val writeQueue = ConcurrentLinkedQueue<WriteOperation>()
@@ -517,18 +519,21 @@ class HttpOverBleClient(private val context: Context) {
             when (uuid) {
                 HttpProxyServiceConstants.HTTP_HEADERS_CHARACTERISTIC_UUID -> {
                     pendingHeaders = HttpResponse.parseHeaders(value)
+                    completedReadCount++
                 }
                 HttpProxyServiceConstants.HTTP_ENTITY_BODY_CHARACTERISTIC_UUID -> {
                     pendingBody = value
+                    completedReadCount++
                 }
                 HttpProxyServiceConstants.HTTPS_SECURITY_CHARACTERISTIC_UUID -> {
                     pendingCertValidated = value.isNotEmpty() && 
                         value[0] == HttpProxyServiceConstants.HTTPS_SECURITY_CERTIFICATE_VALIDATED
+                    completedReadCount++
                 }
             }
             
             // Check if we have all response data
-            if (pendingStatusCode > 0) {
+            if (pendingStatusCode > 0 && completedReadCount >= expectedReadCount) {
                 val response = HttpResponse(
                     statusCode = pendingStatusCode,
                     headers = pendingHeaders,
@@ -542,10 +547,22 @@ class HttpOverBleClient(private val context: Context) {
     }
     
     private fun readResponseCharacteristics() {
-        headersCharacteristic?.let { queueRead(it) }
-        bodyCharacteristic?.let { queueRead(it) }
+        completedReadCount = 0
+        expectedReadCount = 0
+        
+        headersCharacteristic?.let { 
+            queueRead(it)
+            expectedReadCount++
+        }
+        bodyCharacteristic?.let { 
+            queueRead(it)
+            expectedReadCount++
+        }
         if (pendingHttps) {
-            httpsSecurityCharacteristic?.let { queueRead(it) }
+            httpsSecurityCharacteristic?.let { 
+                queueRead(it)
+                expectedReadCount++
+            }
         }
     }
     
