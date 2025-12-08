@@ -70,6 +70,9 @@ class HttpOverBleClient(private val context: Context) {
         private const val SCAN_TIMEOUT_MS = 10000L
         private const val CONNECTION_TIMEOUT_MS = 30000L
         private const val REQUEST_TIMEOUT_MS = 60000L
+        private const val DEFAULT_MTU = 23  // Minimum guaranteed MTU for BLE
+        private const val ATT_OVERHEAD = 3  // ATT protocol overhead (1 byte opcode + 2 bytes handle)
+        private const val MIN_PAYLOAD_SIZE = DEFAULT_MTU - ATT_OVERHEAD  // 20 bytes
     }
     
     private val bluetoothManager: BluetoothManager = 
@@ -108,9 +111,9 @@ class HttpOverBleClient(private val context: Context) {
     private var bodyReadBuffer: ByteArray? = null
     private var currentReadCharacteristic: BluetoothGattCharacteristic? = null
     
-    // MTU tracking (default is 23 bytes for BLE)
+    // MTU tracking (starts with minimum guaranteed MTU for BLE)
     @Volatile
-    private var negotiatedMtu: Int = 23
+    private var negotiatedMtu: Int = DEFAULT_MTU
     
     // Write queue for sequential characteristic writes
     private val writeQueue = ConcurrentLinkedQueue<WriteOperation>()
@@ -543,9 +546,8 @@ class HttpOverBleClient(private val context: Context) {
             
             // Note: Android BLE stack should automatically perform Read Blob requests for large characteristics.
             // However, we implement multi-part reads explicitly to ensure complete data retrieval.
-            // We detect completion when we receive less than (MTU - 3) bytes, where 3 bytes are 
-            // reserved for ATT protocol overhead (1 byte opcode + 2 bytes handle).
-            val maxPayload = if (negotiatedMtu > 3) negotiatedMtu - 3 else 20  // ATT overhead (3 bytes), fallback to default
+            // We detect completion when we receive less than (MTU - ATT_OVERHEAD) bytes.
+            val maxPayload = if (negotiatedMtu > ATT_OVERHEAD) negotiatedMtu - ATT_OVERHEAD else MIN_PAYLOAD_SIZE
             val needMoreData = value.isNotEmpty() && value.size >= maxPayload
             
             when (uuid) {
