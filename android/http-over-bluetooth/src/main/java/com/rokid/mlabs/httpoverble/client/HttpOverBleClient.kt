@@ -106,11 +106,6 @@ class HttpOverBleClient(private val context: Context) {
     @Volatile
     private var completedReadCount: Int = 0
     
-    // Buffers for multi-part reads
-    private var headersReadBuffer: ByteArray? = null
-    private var bodyReadBuffer: ByteArray? = null
-    private var currentReadCharacteristic: BluetoothGattCharacteristic? = null
-    
     // MTU tracking (starts with minimum guaranteed MTU for BLE)
     @Volatile
     private var negotiatedMtu: Int = DEFAULT_MTU
@@ -259,9 +254,6 @@ class HttpOverBleClient(private val context: Context) {
                 pendingBody = null
                 pendingHttps = request.isHttps
                 pendingCertValidated = false
-                headersReadBuffer = null
-                bodyReadBuffer = null
-                currentReadCharacteristic = null
                 
                 // Write URI
                 uriCharacteristic?.let { characteristic ->
@@ -514,11 +506,13 @@ class HttpOverBleClient(private val context: Context) {
             isReading = false
             
             if (status == BluetoothGatt.GATT_SUCCESS) {
-                handleCharacteristicReadChunk(gatt, characteristic, characteristic.value)
+                handleCharacteristicRead(characteristic.uuid, characteristic.value)
             } else {
                 Log.e(TAG, "Characteristic read failed: ${characteristic.uuid}, status: $status")
-                processReadQueue()
             }
+            
+            // Process next item in queue
+            processReadQueue()
         }
         
         override fun onCharacteristicRead(
@@ -530,113 +524,34 @@ class HttpOverBleClient(private val context: Context) {
             isReading = false
             
             if (status == BluetoothGatt.GATT_SUCCESS) {
-                handleCharacteristicReadChunk(gatt, characteristic, value)
+                handleCharacteristicRead(characteristic.uuid, value)
             } else {
                 Log.e(TAG, "Characteristic read failed: ${characteristic.uuid}, status: $status")
-                processReadQueue()
             }
+            
+            // Process next item in queue
+            processReadQueue()
         }
         
-        private fun handleCharacteristicReadChunk(
-            gatt: BluetoothGatt,
-            characteristic: BluetoothGattCharacteristic,
-            value: ByteArray
-        ) {
-            val uuid = characteristic.uuid
-            
-            // Note: Android BLE stack should automatically perform Read Blob requests for large characteristics.
-            // However, we implement multi-part reads explicitly to ensure complete data retrieval.
-            // We detect completion when we receive less than (MTU - ATT_OVERHEAD) bytes.
-            val maxPayload = if (negotiatedMtu > ATT_OVERHEAD) negotiatedMtu - ATT_OVERHEAD else MIN_PAYLOAD_SIZE
-            val needMoreData = value.isNotEmpty() && value.size >= maxPayload
-            
+        private fun handleCharacteristicRead(uuid: java.util.UUID, value: ByteArray) {
+            // Android BLE stack automatically handles Read Blob operations for large characteristics.
+            // The value received here is the complete characteristic value, regardless of size.
             when (uuid) {
                 HttpProxyServiceConstants.HTTP_HEADERS_CHARACTERISTIC_UUID -> {
-                    headersReadBuffer = if (headersReadBuffer == null) {
-                        value
-                    } else {
-                        headersReadBuffer!! + value
-                    }
-                    
-                    val totalSize = headersReadBuffer?.size ?: 0
-                    Log.d(TAG, "Read headers chunk: ${value.size} bytes (MTU payload: $maxPayload), total: $totalSize, needMore: $needMoreData")
-                    
-                    if (needMoreData) {
-                        // BLE stack will automatically use Read Blob with correct offset
-                        currentReadCharacteristic = characteristic
-                        val success = gatt.readCharacteristic(characteristic)
-                        if (success) {
-                            isReading = true
-                        } else {
-                            Log.e(TAG, "Failed to continue reading headers")
-                            // Complete with what we have
-                            headersReadBuffer?.let { buffer ->
-                                pendingHeaders = HttpResponse.parseHeaders(buffer)
-                            }
-                            headersReadBuffer = null
-                            currentReadCharacteristic = null
-                            completedReadCount++
-                            processReadQueue()
-                        }
-                    } else {
-                        // Done reading headers - got less than max payload
-                        headersReadBuffer?.let { buffer ->
-                            pendingHeaders = HttpResponse.parseHeaders(buffer)
-                            Log.d(TAG, "Completed reading headers: ${pendingHeaders}")
-                        }
-                        headersReadBuffer = null
-                        currentReadCharacteristic = null
-                        completedReadCount++
-                        processReadQueue()
-                    }
+                    pendingHeaders = HttpResponse.parseHeaders(value)
+                    Log.d(TAG, "Read headers: ${value.size} bytes, parsed: ${pendingHeaders}")
+                    completedReadCount++
                 }
                 HttpProxyServiceConstants.HTTP_ENTITY_BODY_CHARACTERISTIC_UUID -> {
-                    bodyReadBuffer = if (bodyReadBuffer == null) {
-                        value
-                    } else {
-                        bodyReadBuffer!! + value
-                    }
-                    
-                    val totalSize = bodyReadBuffer?.size ?: 0
-                    Log.d(TAG, "Read body chunk: ${value.size} bytes (MTU payload: $maxPayload), total: $totalSize, needMore: $needMoreData")
-                    
-                    if (needMoreData) {
-                        // BLE stack will automatically use Read Blob with correct offset
-                        currentReadCharacteristic = characteristic
-                        val success = gatt.readCharacteristic(characteristic)
-                        if (success) {
-                            isReading = true
-                        } else {
-                            Log.e(TAG, "Failed to continue reading body")
-                            // Complete with what we have
-                            pendingBody = bodyReadBuffer
-                            bodyReadBuffer = null
-                            currentReadCharacteristic = null
-                            completedReadCount++
-                            processReadQueue()
-                        }
-                    } else {
-                        // Done reading body - got less than max payload
-                        val finalSize = bodyReadBuffer?.size ?: 0
-                        Log.d(TAG, "Completed reading body: $finalSize bytes")
-                        pendingBody = bodyReadBuffer
-                        bodyReadBuffer = null
-                        currentReadCharacteristic = null
-                        completedReadCount++
-                        processReadQueue()
-                    }
+                    pendingBody = value
+                    Log.d(TAG, "Read body: ${value.size} bytes")
+                    completedReadCount++
                 }
                 HttpProxyServiceConstants.HTTPS_SECURITY_CHARACTERISTIC_UUID -> {
-                    // Security characteristic is always 1 byte
                     pendingCertValidated = value.isNotEmpty() && 
                         value[0] == HttpProxyServiceConstants.HTTPS_SECURITY_CERTIFICATE_VALIDATED
                     Log.d(TAG, "Read HTTPS security: certified=$pendingCertValidated")
                     completedReadCount++
-                    processReadQueue()
-                }
-                else -> {
-                    Log.w(TAG, "Read unknown characteristic: $uuid")
-                    processReadQueue()
                 }
             }
             
