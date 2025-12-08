@@ -534,8 +534,9 @@ class HttpOverBleClient(private val context: Context) {
         }
         
         private fun handleCharacteristicRead(uuid: java.util.UUID, value: ByteArray) {
-            // Android BLE stack automatically handles Read Blob operations for large characteristics.
-            // The value received here is the complete characteristic value, regardless of size.
+            // Android BLE stack (API 18+) automatically handles Read Blob operations for large characteristics.
+            // The value received here should contain the complete characteristic value.
+            // For very large values (>512 bytes), the server must properly handle offset-based reads.
             when (uuid) {
                 HttpProxyServiceConstants.HTTP_HEADERS_CHARACTERISTIC_UUID -> {
                     pendingHeaders = HttpResponse.parseHeaders(value)
@@ -552,6 +553,10 @@ class HttpOverBleClient(private val context: Context) {
                         value[0] == HttpProxyServiceConstants.HTTPS_SECURITY_CERTIFICATE_VALIDATED
                     Log.d(TAG, "Read HTTPS security: certified=$pendingCertValidated")
                     completedReadCount++
+                }
+                else -> {
+                    Log.w(TAG, "Read unknown characteristic: $uuid, ignoring")
+                    // Don't increment completedReadCount for unknown characteristics
                 }
             }
             
