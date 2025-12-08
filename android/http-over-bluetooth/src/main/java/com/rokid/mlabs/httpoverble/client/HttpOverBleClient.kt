@@ -98,10 +98,20 @@ class HttpOverBleClient(private val context: Context) {
     private var pendingBody: ByteArray? = null
     private var pendingHttps: Boolean = false
     private var pendingCertValidated: Boolean = false
+    @Volatile
+    private var expectedReadCount: Int = 0
+    @Volatile
+    private var completedReadCount: Int = 0
     
     // Write queue for sequential characteristic writes
     private val writeQueue = ConcurrentLinkedQueue<WriteOperation>()
+    @Volatile
     private var isWriting = false
+    
+    // Read queue for sequential characteristic reads
+    private val readQueue = ConcurrentLinkedQueue<BluetoothGattCharacteristic>()
+    @Volatile
+    private var isReading = false
     
     private data class WriteOperation(
         val characteristic: BluetoothGattCharacteristic,
@@ -307,6 +317,27 @@ class HttpOverBleClient(private val context: Context) {
         }
     }
     
+    private fun queueRead(characteristic: BluetoothGattCharacteristic) {
+        readQueue.add(characteristic)
+        processReadQueue()
+    }
+    
+    @Synchronized
+    private fun processReadQueue() {
+        if (isReading || readQueue.isEmpty()) return
+        
+        val characteristic = readQueue.poll() ?: return
+        isReading = true
+        
+        val success = bluetoothGatt?.readCharacteristic(characteristic) ?: false
+        if (!success) {
+            Log.e(TAG, "Failed to initiate characteristic read: ${characteristic.uuid}")
+            isReading = false
+            // Try next item in queue
+            processReadQueue()
+        }
+    }
+    
     private fun clearCharacteristics() {
         uriCharacteristic = null
         headersCharacteristic = null
@@ -456,9 +487,16 @@ class HttpOverBleClient(private val context: Context) {
             characteristic: BluetoothGattCharacteristic,
             status: Int
         ) {
+            isReading = false
+            
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 handleCharacteristicRead(characteristic.uuid, characteristic.value)
+            } else {
+                Log.e(TAG, "Characteristic read failed: ${characteristic.uuid}")
             }
+            
+            // Process next item in queue
+            processReadQueue()
         }
         
         override fun onCharacteristicRead(
@@ -467,27 +505,37 @@ class HttpOverBleClient(private val context: Context) {
             value: ByteArray,
             status: Int
         ) {
+            isReading = false
+            
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 handleCharacteristicRead(characteristic.uuid, value)
+            } else {
+                Log.e(TAG, "Characteristic read failed: ${characteristic.uuid}")
             }
+            
+            // Process next item in queue
+            processReadQueue()
         }
         
         private fun handleCharacteristicRead(uuid: java.util.UUID, value: ByteArray) {
             when (uuid) {
                 HttpProxyServiceConstants.HTTP_HEADERS_CHARACTERISTIC_UUID -> {
                     pendingHeaders = HttpResponse.parseHeaders(value)
+                    completedReadCount++
                 }
                 HttpProxyServiceConstants.HTTP_ENTITY_BODY_CHARACTERISTIC_UUID -> {
                     pendingBody = value
+                    completedReadCount++
                 }
                 HttpProxyServiceConstants.HTTPS_SECURITY_CHARACTERISTIC_UUID -> {
                     pendingCertValidated = value.isNotEmpty() && 
                         value[0] == HttpProxyServiceConstants.HTTPS_SECURITY_CERTIFICATE_VALIDATED
+                    completedReadCount++
                 }
             }
             
             // Check if we have all response data
-            if (pendingStatusCode > 0) {
+            if (pendingStatusCode > 0 && completedReadCount == expectedReadCount && expectedReadCount > 0) {
                 val response = HttpResponse(
                     statusCode = pendingStatusCode,
                     headers = pendingHeaders,
@@ -501,11 +549,21 @@ class HttpOverBleClient(private val context: Context) {
     }
     
     private fun readResponseCharacteristics() {
-        bluetoothGatt?.let { gatt ->
-            headersCharacteristic?.let { gatt.readCharacteristic(it) }
-            bodyCharacteristic?.let { gatt.readCharacteristic(it) }
-            if (pendingHttps) {
-                httpsSecurityCharacteristic?.let { gatt.readCharacteristic(it) }
+        completedReadCount = 0
+        expectedReadCount = 0
+        
+        headersCharacteristic?.let { 
+            queueRead(it)
+            expectedReadCount++
+        }
+        bodyCharacteristic?.let { 
+            queueRead(it)
+            expectedReadCount++
+        }
+        if (pendingHttps) {
+            httpsSecurityCharacteristic?.let { 
+                queueRead(it)
+                expectedReadCount++
             }
         }
     }
