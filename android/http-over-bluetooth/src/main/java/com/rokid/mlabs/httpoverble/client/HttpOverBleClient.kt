@@ -529,19 +529,19 @@ class HttpOverBleClient(private val context: Context) {
             val uuid = characteristic.uuid
             
             // Note: Android BLE stack should automatically perform Read Blob requests for large characteristics.
-            // However, we accumulate data here in case the characteristic value was set in parts or if
-            // Read Blob operations are being done manually. We detect completion when we receive less
-            // than the MTU-3 bytes (ATT protocol overhead).
+            // However, we implement multi-part reads explicitly to ensure complete data retrieval.
+            // We detect completion when we receive less than (MTU - 3) bytes, where 3 bytes are 
+            // reserved for ATT protocol overhead (1 byte opcode + 2 bytes handle).
             val mtu = gatt.getMtu()
-            val maxPayload = if (mtu > 3) mtu - 3 else 20  // ATT overhead, fallback to default
+            val maxPayload = if (mtu > 3) mtu - 3 else 20  // ATT overhead (3 bytes), fallback to default MTU
             val needMoreData = value.isNotEmpty() && value.size >= maxPayload
             
             when (uuid) {
                 HttpProxyServiceConstants.HTTP_HEADERS_CHARACTERISTIC_UUID -> {
-                    if (headersReadBuffer == null) {
-                        headersReadBuffer = value
+                    headersReadBuffer = if (headersReadBuffer == null) {
+                        value
                     } else {
-                        headersReadBuffer = headersReadBuffer!! + value
+                        headersReadBuffer!! + value
                     }
                     
                     val totalSize = headersReadBuffer?.size ?: 0
@@ -577,10 +577,10 @@ class HttpOverBleClient(private val context: Context) {
                     }
                 }
                 HttpProxyServiceConstants.HTTP_ENTITY_BODY_CHARACTERISTIC_UUID -> {
-                    if (bodyReadBuffer == null) {
-                        bodyReadBuffer = value
+                    bodyReadBuffer = if (bodyReadBuffer == null) {
+                        value
                     } else {
-                        bodyReadBuffer = bodyReadBuffer!! + value
+                        bodyReadBuffer!! + value
                     }
                     
                     val totalSize = bodyReadBuffer?.size ?: 0
