@@ -108,6 +108,10 @@ class HttpOverBleClient(private val context: Context) {
     private var bodyReadBuffer: ByteArray? = null
     private var currentReadCharacteristic: BluetoothGattCharacteristic? = null
     
+    // MTU tracking (default is 23 bytes for BLE)
+    @Volatile
+    private var negotiatedMtu: Int = 23
+    
     // Write queue for sequential characteristic writes
     private val writeQueue = ConcurrentLinkedQueue<WriteOperation>()
     @Volatile
@@ -392,6 +396,15 @@ class HttpOverBleClient(private val context: Context) {
             }
         }
         
+        override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                negotiatedMtu = mtu
+                Log.d(TAG, "MTU changed to: $mtu")
+            } else {
+                Log.w(TAG, "MTU change failed with status: $status, using default MTU: $negotiatedMtu")
+            }
+        }
+        
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 Log.e(TAG, "Service discovery failed with status: $status")
@@ -500,7 +513,7 @@ class HttpOverBleClient(private val context: Context) {
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 handleCharacteristicReadChunk(gatt, characteristic, characteristic.value)
             } else {
-                Log.e(TAG, "Characteristic read failed: ${characteristic.uuid}")
+                Log.e(TAG, "Characteristic read failed: ${characteristic.uuid}, status: $status")
                 processReadQueue()
             }
         }
@@ -516,7 +529,7 @@ class HttpOverBleClient(private val context: Context) {
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 handleCharacteristicReadChunk(gatt, characteristic, value)
             } else {
-                Log.e(TAG, "Characteristic read failed: ${characteristic.uuid}")
+                Log.e(TAG, "Characteristic read failed: ${characteristic.uuid}, status: $status")
                 processReadQueue()
             }
         }
@@ -532,8 +545,7 @@ class HttpOverBleClient(private val context: Context) {
             // However, we implement multi-part reads explicitly to ensure complete data retrieval.
             // We detect completion when we receive less than (MTU - 3) bytes, where 3 bytes are 
             // reserved for ATT protocol overhead (1 byte opcode + 2 bytes handle).
-            val mtu = gatt.getMtu()
-            val maxPayload = if (mtu > 3) mtu - 3 else 20  // ATT overhead (3 bytes), fallback to default MTU
+            val maxPayload = if (negotiatedMtu > 3) negotiatedMtu - 3 else 20  // ATT overhead (3 bytes), fallback to default
             val needMoreData = value.isNotEmpty() && value.size >= maxPayload
             
             when (uuid) {
