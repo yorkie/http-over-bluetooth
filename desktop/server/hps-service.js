@@ -21,6 +21,11 @@ export class HttpProxyService {
         this.certificateValidated = false;
         this.deviceName = options.deviceName || 'HPS Server';
         
+        // Multi-part write buffers for handling offset-based writes
+        this.uriBuffer = null;
+        this.headersBuffer = null;
+        this.bodyBuffer = null;
+        
         // Notification state
         this.statusCodeUpdateCallback = null;
         
@@ -42,8 +47,21 @@ export class HttpProxyService {
             properties: ['write'],
             onWriteRequest: (data, offset, withoutResponse, callback) => {
                 try {
-                    this.uri = data.toString('utf8');
-                    this.log(`URI set to: ${this.uri}`);
+                    // Handle multi-part writes with offset
+                    if (offset === 0) {
+                        // Start new write
+                        this.uriBuffer = Buffer.from(data);
+                    } else if (this.uriBuffer && offset === this.uriBuffer.length) {
+                        // Append to existing buffer
+                        this.uriBuffer = Buffer.concat([this.uriBuffer, data]);
+                    } else {
+                        // Invalid offset
+                        this.log(`Invalid URI write offset: ${offset}`);
+                        callback(Characteristic.RESULT_INVALID_OFFSET);
+                        return;
+                    }
+                    this.uri = this.uriBuffer.toString('utf8');
+                    this.log(`URI set to: ${this.uri} (offset: ${offset}, length: ${data.length})`);
                     callback(Characteristic.RESULT_SUCCESS);
                 } catch (error) {
                     this.log(`Error setting URI: ${error.message}`);
@@ -60,16 +78,31 @@ export class HttpProxyService {
                 try {
                     const headersString = this.serializeHeaders(this.responseHeaders);
                     const data = Buffer.from(headersString, 'utf8');
-                    this.log(`Sending headers: ${headersString.length} bytes`);
-                    callback(Characteristic.RESULT_SUCCESS, data);
+                    // Handle offset for multi-part reads
+                    const responseData = offset < data.length ? data.slice(offset) : Buffer.alloc(0);
+                    this.log(`Sending headers: ${responseData.length} bytes (offset: ${offset}, total: ${data.length})`);
+                    callback(Characteristic.RESULT_SUCCESS, responseData);
                 } catch (error) {
                     callback(Characteristic.RESULT_UNLIKELY_ERROR);
                 }
             },
             onWriteRequest: (data, offset, withoutResponse, callback) => {
                 try {
-                    this.headers = this.parseHeaders(data.toString('utf8'));
-                    this.log(`Headers set: ${JSON.stringify(this.headers)}`);
+                    // Handle multi-part writes with offset
+                    if (offset === 0) {
+                        // Start new write
+                        this.headersBuffer = Buffer.from(data);
+                    } else if (this.headersBuffer && offset === this.headersBuffer.length) {
+                        // Append to existing buffer
+                        this.headersBuffer = Buffer.concat([this.headersBuffer, data]);
+                    } else {
+                        // Invalid offset
+                        this.log(`Invalid headers write offset: ${offset}`);
+                        callback(Characteristic.RESULT_INVALID_OFFSET);
+                        return;
+                    }
+                    this.headers = this.parseHeaders(this.headersBuffer.toString('utf8'));
+                    this.log(`Headers set: ${JSON.stringify(this.headers)} (offset: ${offset}, length: ${data.length})`);
                     callback(Characteristic.RESULT_SUCCESS);
                 } catch (error) {
                     this.log(`Error setting headers: ${error.message}`);
@@ -109,16 +142,31 @@ export class HttpProxyService {
             onReadRequest: (offset, callback) => {
                 try {
                     const data = this.responseBody || Buffer.alloc(0);
-                    this.log(`Sending body: ${data.length} bytes`);
-                    callback(Characteristic.RESULT_SUCCESS, data);
+                    // Handle offset for multi-part reads
+                    const responseData = offset < data.length ? data.slice(offset) : Buffer.alloc(0);
+                    this.log(`Sending body: ${responseData.length} bytes (offset: ${offset}, total: ${data.length})`);
+                    callback(Characteristic.RESULT_SUCCESS, responseData);
                 } catch (error) {
                     callback(Characteristic.RESULT_UNLIKELY_ERROR);
                 }
             },
             onWriteRequest: (data, offset, withoutResponse, callback) => {
                 try {
-                    this.body = data;
-                    this.log(`Body set: ${data.length} bytes`);
+                    // Handle multi-part writes with offset
+                    if (offset === 0) {
+                        // Start new write
+                        this.bodyBuffer = Buffer.from(data);
+                    } else if (this.bodyBuffer && offset === this.bodyBuffer.length) {
+                        // Append to existing buffer
+                        this.bodyBuffer = Buffer.concat([this.bodyBuffer, data]);
+                    } else {
+                        // Invalid offset
+                        this.log(`Invalid body write offset: ${offset}`);
+                        callback(Characteristic.RESULT_INVALID_OFFSET);
+                        return;
+                    }
+                    this.body = this.bodyBuffer;
+                    this.log(`Body set: ${this.body.length} bytes (offset: ${offset}, length: ${data.length})`);
                     callback(Characteristic.RESULT_SUCCESS);
                 } catch (error) {
                     this.log(`Error setting body: ${error.message}`);
@@ -157,10 +205,18 @@ export class HttpProxyService {
         });
     }
     
+    resetRequestBuffers() {
+        // Reset write buffers for next request
+        this.uriBuffer = null;
+        this.headersBuffer = null;
+        this.bodyBuffer = null;
+    }
+    
     async executeHttpRequest(opcode) {
         try {
             if (opcode === HPS.OPCODE_HTTP_REQUEST_CANCEL) {
                 this.log('Request cancelled');
+                this.resetRequestBuffers();
                 return;
             }
             
@@ -235,6 +291,9 @@ export class HttpProxyService {
                 });
             }
             
+            // Reset buffers for next request
+            this.resetRequestBuffers();
+            
         } catch (error) {
             this.log(`HTTP request error: ${error.message}`);
             this.statusCode = 500;
@@ -249,6 +308,9 @@ export class HttpProxyService {
             if (this.onError) {
                 this.onError(error);
             }
+            
+            // Reset buffers for next request even on error
+            this.resetRequestBuffers();
         }
     }
     

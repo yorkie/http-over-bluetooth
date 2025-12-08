@@ -105,7 +105,11 @@ class HttpOverBleServer(private val context: Context) {
     private data class ClientRequestData(
         var uri: String? = null,
         var headers: Map<String, String> = emptyMap(),
-        var body: ByteArray? = null
+        var body: ByteArray? = null,
+        // Buffers for multi-part writes
+        var uriBuffer: ByteArray? = null,
+        var headersBuffer: ByteArray? = null,
+        var bodyBuffer: ByteArray? = null
     ) {
         override fun equals(other: Any?): Boolean {
             if (this === other) return true
@@ -117,6 +121,18 @@ class HttpOverBleServer(private val context: Context) {
                 if (other.body == null) return false
                 if (!body.contentEquals(other.body)) return false
             } else if (other.body != null) return false
+            if (uriBuffer != null) {
+                if (other.uriBuffer == null) return false
+                if (!uriBuffer.contentEquals(other.uriBuffer)) return false
+            } else if (other.uriBuffer != null) return false
+            if (headersBuffer != null) {
+                if (other.headersBuffer == null) return false
+                if (!headersBuffer.contentEquals(other.headersBuffer)) return false
+            } else if (other.headersBuffer != null) return false
+            if (bodyBuffer != null) {
+                if (other.bodyBuffer == null) return false
+                if (!bodyBuffer.contentEquals(other.bodyBuffer)) return false
+            } else if (other.bodyBuffer != null) return false
             return true
         }
 
@@ -124,6 +140,9 @@ class HttpOverBleServer(private val context: Context) {
             var result = uri?.hashCode() ?: 0
             result = 31 * result + headers.hashCode()
             result = 31 * result + (body?.contentHashCode() ?: 0)
+            result = 31 * result + (uriBuffer?.contentHashCode() ?: 0)
+            result = 31 * result + (headersBuffer?.contentHashCode() ?: 0)
+            result = 31 * result + (bodyBuffer?.contentHashCode() ?: 0)
             return result
         }
     }
@@ -364,28 +383,73 @@ class HttpOverBleServer(private val context: Context) {
             
             when (characteristic.uuid) {
                 HttpProxyServiceConstants.URI_CHARACTERISTIC_UUID -> {
-                    clientData.uri = String(value, Charsets.UTF_8)
-                    Log.d(TAG, "Received URI: ${clientData.uri}")
+                    // Handle multi-part writes with offset
+                    if (offset == 0) {
+                        // Start new write
+                        clientData.uriBuffer = value
+                    } else if (clientData.uriBuffer != null && offset == clientData.uriBuffer!!.size) {
+                        // Append to existing buffer
+                        clientData.uriBuffer = clientData.uriBuffer!! + value
+                    } else {
+                        // Invalid offset
+                        Log.e(TAG, "Invalid URI write offset: $offset")
+                        if (responseNeeded) {
+                            gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_INVALID_OFFSET, offset, null)
+                        }
+                        return
+                    }
+                    clientData.uri = String(clientData.uriBuffer!!, Charsets.UTF_8)
+                    Log.d(TAG, "Received URI: ${clientData.uri} (offset: $offset, length: ${value.size})")
                 }
                 HttpProxyServiceConstants.HTTP_HEADERS_CHARACTERISTIC_UUID -> {
-                    clientData.headers = HttpResponse.parseHeaders(value)
+                    // Handle multi-part writes with offset
+                    if (offset == 0) {
+                        // Start new write
+                        clientData.headersBuffer = value
+                    } else if (clientData.headersBuffer != null && offset == clientData.headersBuffer!!.size) {
+                        // Append to existing buffer
+                        clientData.headersBuffer = clientData.headersBuffer!! + value
+                    } else {
+                        // Invalid offset
+                        Log.e(TAG, "Invalid headers write offset: $offset")
+                        if (responseNeeded) {
+                            gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_INVALID_OFFSET, offset, null)
+                        }
+                        return
+                    }
+                    clientData.headers = HttpResponse.parseHeaders(clientData.headersBuffer!!)
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        characteristic.setValue(value)
+                        characteristic.setValue(clientData.headersBuffer!!)
                     } else {
                         @Suppress("DEPRECATION")
-                        characteristic.value = value
+                        characteristic.value = clientData.headersBuffer!!
                     }
-                    Log.d(TAG, "Received headers: ${clientData.headers}")
+                    Log.d(TAG, "Received headers: ${clientData.headers} (offset: $offset, length: ${value.size})")
                 }
                 HttpProxyServiceConstants.HTTP_ENTITY_BODY_CHARACTERISTIC_UUID -> {
-                    clientData.body = value
+                    // Handle multi-part writes with offset
+                    if (offset == 0) {
+                        // Start new write
+                        clientData.bodyBuffer = value
+                    } else if (clientData.bodyBuffer != null && offset == clientData.bodyBuffer!!.size) {
+                        // Append to existing buffer
+                        clientData.bodyBuffer = clientData.bodyBuffer!! + value
+                    } else {
+                        // Invalid offset
+                        Log.e(TAG, "Invalid body write offset: $offset")
+                        if (responseNeeded) {
+                            gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_INVALID_OFFSET, offset, null)
+                        }
+                        return
+                    }
+                    clientData.body = clientData.bodyBuffer
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        characteristic.setValue(value)
+                        characteristic.setValue(clientData.bodyBuffer!!)
                     } else {
                         @Suppress("DEPRECATION")
-                        characteristic.value = value
+                        characteristic.value = clientData.bodyBuffer!!
                     }
-                    Log.d(TAG, "Received body: ${value.size} bytes")
+                    Log.d(TAG, "Received body: ${clientData.body?.size} bytes (offset: $offset, length: ${value.size})")
                 }
                 HttpProxyServiceConstants.HTTP_CONTROL_POINT_CHARACTERISTIC_UUID -> {
                     if (value.isNotEmpty()) {
@@ -446,6 +510,10 @@ class HttpOverBleServer(private val context: Context) {
     private fun handleControlPoint(device: BluetoothDevice, opcode: Byte, clientData: ClientRequestData) {
         if (opcode == HttpProxyServiceConstants.OPCODE_HTTP_REQUEST_CANCEL) {
             Log.d(TAG, "Request cancelled by client")
+            // Reset buffers on cancel
+            clientData.uriBuffer = null
+            clientData.headersBuffer = null
+            clientData.bodyBuffer = null
             return
         }
         
@@ -544,6 +612,13 @@ class HttpOverBleServer(private val context: Context) {
             
             Log.d(TAG, "HTTP response: ${response.code}")
             
+            // Reset buffers for next request
+            clientRequestData[device.address]?.let { clientData ->
+                clientData.uriBuffer = null
+                clientData.headersBuffer = null
+                clientData.bodyBuffer = null
+            }
+            
         } catch (e: Exception) {
             Log.e(TAG, "HTTP request failed", e)
             callback?.onError(HttpOverBleServerError.HttpRequestFailed("HTTP request failed: ${e.message}"))
@@ -557,6 +632,13 @@ class HttpOverBleServer(private val context: Context) {
                 certificateValidated = false
             )
             sendResponse(device, errorResponse)
+            
+            // Reset buffers for next request even on error
+            clientRequestData[device.address]?.let { clientData ->
+                clientData.uriBuffer = null
+                clientData.headersBuffer = null
+                clientData.bodyBuffer = null
+            }
         }
     }
     
