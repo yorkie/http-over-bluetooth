@@ -544,17 +544,21 @@ class HttpOverBleClient(private val context: Context) {
                         headersReadBuffer = headersReadBuffer!! + value
                     }
                     
-                    Log.d(TAG, "Read headers chunk: ${value.size} bytes (MTU payload: $maxPayload), total: ${headersReadBuffer!!.size}, needMore: $needMoreData")
+                    val totalSize = headersReadBuffer?.size ?: 0
+                    Log.d(TAG, "Read headers chunk: ${value.size} bytes (MTU payload: $maxPayload), total: $totalSize, needMore: $needMoreData")
                     
                     if (needMoreData) {
                         // BLE stack will automatically use Read Blob with correct offset
                         currentReadCharacteristic = characteristic
-                        isReading = true
                         val success = gatt.readCharacteristic(characteristic)
-                        if (!success) {
+                        if (success) {
+                            isReading = true
+                        } else {
                             Log.e(TAG, "Failed to continue reading headers")
                             // Complete with what we have
-                            pendingHeaders = HttpResponse.parseHeaders(headersReadBuffer!!)
+                            headersReadBuffer?.let { buffer ->
+                                pendingHeaders = HttpResponse.parseHeaders(buffer)
+                            }
                             headersReadBuffer = null
                             currentReadCharacteristic = null
                             completedReadCount++
@@ -562,8 +566,10 @@ class HttpOverBleClient(private val context: Context) {
                         }
                     } else {
                         // Done reading headers - got less than max payload
-                        pendingHeaders = HttpResponse.parseHeaders(headersReadBuffer!!)
-                        Log.d(TAG, "Completed reading headers: ${pendingHeaders}")
+                        headersReadBuffer?.let { buffer ->
+                            pendingHeaders = HttpResponse.parseHeaders(buffer)
+                            Log.d(TAG, "Completed reading headers: ${pendingHeaders}")
+                        }
                         headersReadBuffer = null
                         currentReadCharacteristic = null
                         completedReadCount++
@@ -577,14 +583,16 @@ class HttpOverBleClient(private val context: Context) {
                         bodyReadBuffer = bodyReadBuffer!! + value
                     }
                     
-                    Log.d(TAG, "Read body chunk: ${value.size} bytes (MTU payload: $maxPayload), total: ${bodyReadBuffer!!.size}, needMore: $needMoreData")
+                    val totalSize = bodyReadBuffer?.size ?: 0
+                    Log.d(TAG, "Read body chunk: ${value.size} bytes (MTU payload: $maxPayload), total: $totalSize, needMore: $needMoreData")
                     
                     if (needMoreData) {
                         // BLE stack will automatically use Read Blob with correct offset
                         currentReadCharacteristic = characteristic
-                        isReading = true
                         val success = gatt.readCharacteristic(characteristic)
-                        if (!success) {
+                        if (success) {
+                            isReading = true
+                        } else {
                             Log.e(TAG, "Failed to continue reading body")
                             // Complete with what we have
                             pendingBody = bodyReadBuffer
@@ -595,7 +603,8 @@ class HttpOverBleClient(private val context: Context) {
                         }
                     } else {
                         // Done reading body - got less than max payload
-                        Log.d(TAG, "Completed reading body: ${bodyReadBuffer!!.size} bytes")
+                        val finalSize = bodyReadBuffer?.size ?: 0
+                        Log.d(TAG, "Completed reading body: $finalSize bytes")
                         pendingBody = bodyReadBuffer
                         bodyReadBuffer = null
                         currentReadCharacteristic = null
