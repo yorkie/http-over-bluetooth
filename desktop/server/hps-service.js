@@ -32,8 +32,9 @@ export class HttpProxyService {
         this.headersPacketBuffer = null;
         this.bodyPacketBuffer = null;
         
-        // MTU tracking
-        this.negotiatedMtu = HttpProxyService.DEFAULT_MTU;
+        // MTU tracking (will be updated when client sends MTU via headers)
+        this.negotiatedMtu = 510;  // Use 510 as default max packet size
+        this.clientMtu = null;  // Will be set when client notifies MTU
         
         // Notification state
         this.statusCodeUpdateCallback = null;
@@ -94,14 +95,7 @@ export class HttpProxyService {
                 try {
                     const headersString = this.serializeHeaders(this.responseHeaders);
                     const data = Buffer.from(headersString, 'utf8');
-                    
-                    // Wrap data with packet header (final=true for single packet)
-                    // For multi-packet support, would need to track read state
-                    const packet = Buffer.concat([Buffer.from([HttpProxyService.FLAG_IS_FINAL]), data]);
-                    const responseData = offset < packet.length ? packet.slice(offset) : Buffer.alloc(0);
-                    
-                    this.log(`Sending headers packet: ${responseData.length} bytes (offset: ${offset}, total: ${packet.length})`);
-                    callback(Characteristic.RESULT_SUCCESS, responseData);
+                    this.handlePacketizedRead(data, offset, callback);
                 } catch (error) {
                     callback(Characteristic.RESULT_UNLIKELY_ERROR);
                 }
@@ -124,6 +118,18 @@ export class HttpProxyService {
                     
                     if (isFinal) {
                         this.headers = this.parseHeaders(this.headersPacketBuffer.toString('utf8'));
+                        
+                        // Check if client sent MTU in special header
+                        if (this.headers['X-BLE-MTU']) {
+                            const clientMtu = parseInt(this.headers['X-BLE-MTU']);
+                            if (!isNaN(clientMtu) && clientMtu > 0) {
+                                this.clientMtu = clientMtu;
+                                this.log(`Client MTU set to: ${clientMtu}`);
+                                // Remove the special header
+                                delete this.headers['X-BLE-MTU'];
+                            }
+                        }
+                        
                         this.log(`Headers complete: ${JSON.stringify(this.headers)} (${this.headersPacketBuffer.length} bytes)`);
                         this.headersPacketBuffer = null;
                     } else {
@@ -169,14 +175,7 @@ export class HttpProxyService {
             onReadRequest: (offset, callback) => {
                 try {
                     const data = this.responseBody || Buffer.alloc(0);
-                    
-                    // Wrap data with packet header (final=true for single packet)
-                    // For multi-packet support, would need to track read state
-                    const packet = Buffer.concat([Buffer.from([HttpProxyService.FLAG_IS_FINAL]), data]);
-                    const responseData = offset < packet.length ? packet.slice(offset) : Buffer.alloc(0);
-                    
-                    this.log(`Sending body packet: ${responseData.length} bytes (offset: ${offset}, total: ${packet.length})`);
-                    callback(Characteristic.RESULT_SUCCESS, responseData);
+                    this.handlePacketizedRead(data, offset, callback);
                 } catch (error) {
                     callback(Characteristic.RESULT_UNLIKELY_ERROR);
                 }
@@ -235,13 +234,15 @@ export class HttpProxyService {
             uuid: HPS.HTTPS_SECURITY_CHARACTERISTIC_UUID,
             properties: ['read'],
             onReadRequest: (offset, callback) => {
-                const value = this.certificateValidated 
-                    ? HPS.HTTPS_SECURITY_CERTIFICATE_VALIDATED 
-                    : HPS.HTTPS_SECURITY_CERTIFICATE_NOT_VALIDATED;
-                // Wrap with packet header
-                const packet = Buffer.from([HttpProxyService.FLAG_IS_FINAL, value]);
-                const responseData = offset < packet.length ? packet.slice(offset) : Buffer.alloc(0);
-                callback(Characteristic.RESULT_SUCCESS, responseData);
+                try {
+                    const value = this.certificateValidated 
+                        ? HPS.HTTPS_SECURITY_CERTIFICATE_VALIDATED 
+                        : HPS.HTTPS_SECURITY_CERTIFICATE_NOT_VALIDATED;
+                    const data = Buffer.from([value]);
+                    this.handlePacketizedRead(data, offset, callback);
+                } catch (error) {
+                    callback(Characteristic.RESULT_UNLIKELY_ERROR);
+                }
             }
         });
     }
@@ -368,6 +369,63 @@ export class HttpProxyService {
             }
         });
         return headers;
+    }
+    
+    /**
+     * Splits data into packets for reading.
+     * Returns array of packets, each with header byte indicating if final.
+     */
+    splitDataIntoPackets(data) {
+        const maxPacketSize = this.clientMtu || 510;  // Use client MTU or default 510
+        const maxPayload = maxPacketSize - HttpProxyService.ATT_OVERHEAD - HttpProxyService.PACKET_HEADER_SIZE;
+        
+        if (maxPayload <= 0) {
+            this.log(`Invalid packet size configuration: MTU=${maxPacketSize}`);
+            // Fallback: single packet with all data
+            return [Buffer.concat([Buffer.from([HttpProxyService.FLAG_IS_FINAL]), data])];
+        }
+        
+        const packets = [];
+        let offset = 0;
+        
+        while (offset < data.length) {
+            const remainingBytes = data.length - offset;
+            const payloadSize = Math.min(remainingBytes, maxPayload);
+            const isFinal = (offset + payloadSize) >= data.length;
+            
+            const header = isFinal ? HttpProxyService.FLAG_IS_FINAL : 0x00;
+            const payload = data.slice(offset, offset + payloadSize);
+            const packet = Buffer.concat([Buffer.from([header]), payload]);
+            
+            packets.push(packet);
+            offset += payloadSize;
+        }
+        
+        this.log(`Split data into ${packets.length} packet(s), max payload: ${maxPayload} bytes`);
+        return packets;
+    }
+    
+    /**
+     * Handles read requests with multi-packet support.
+     * Serves packets based on offset, properly handling packet boundaries.
+     */
+    handlePacketizedRead(data, offset, callback) {
+        try {
+            const packets = this.splitDataIntoPackets(data);
+            
+            // Concatenate all packets
+            const allPacketsData = Buffer.concat(packets);
+            
+            // Serve data from offset
+            const responseData = offset < allPacketsData.length ? 
+                allPacketsData.slice(offset) : Buffer.alloc(0);
+            
+            this.log(`Serving ${responseData.length} bytes from offset ${offset} (total: ${allPacketsData.length} bytes, ${packets.length} packets)`);
+            callback(Characteristic.RESULT_SUCCESS, responseData);
+        } catch (error) {
+            this.log(`Error in packetized read: ${error.message}`);
+            callback(Characteristic.RESULT_UNLIKELY_ERROR);
+        }
     }
     
     serializeHeaders(headers) {

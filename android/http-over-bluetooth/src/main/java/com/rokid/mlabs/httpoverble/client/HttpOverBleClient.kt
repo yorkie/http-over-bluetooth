@@ -277,14 +277,19 @@ class HttpOverBleClient(private val context: Context) {
                 }
                 
                 // Write Headers with packet splitting if present
-                if (request.headers.isNotEmpty()) {
-                    headersCharacteristic?.let { characteristic ->
-                        val headerBytes = request.serializeHeaders()
-                        val packets = splitIntoPackets(headerBytes)
-                        Log.d(TAG, "Writing headers in ${packets.size} packet(s)")
-                        packets.forEach { packet ->
-                            queueWrite(characteristic, packet)
-                        }
+                // Include MTU in headers for server to use
+                headersCharacteristic?.let { characteristic ->
+                    val headersWithMtu = request.headers.toMutableMap()
+                    headersWithMtu["X-BLE-MTU"] = negotiatedMtu.toString()
+                    
+                    val headerString = headersWithMtu.entries
+                        .joinToString("\r\n") { "${it.key}: ${it.value}" }
+                    val headerBytes = headerString.toByteArray(Charsets.UTF_8)
+                    
+                    val packets = splitIntoPackets(headerBytes)
+                    Log.d(TAG, "Writing headers (with MTU=$negotiatedMtu) in ${packets.size} packet(s)")
+                    packets.forEach { packet ->
+                        queueWrite(characteristic, packet)
                     }
                 }
                 
