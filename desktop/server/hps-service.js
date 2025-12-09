@@ -9,6 +9,12 @@ const { Characteristic, Descriptor } = bleno;
  * This service allows BLE clients to send HTTP requests through this server.
  */
 export class HttpProxyService {
+    // Packet protocol constants
+    static FLAG_IS_FINAL = 0x01;
+    static PACKET_HEADER_SIZE = 1;
+    static DEFAULT_MTU = 23;
+    static ATT_OVERHEAD = 3;
+    
     constructor(options = {}) {
         // Request state
         this.uri = '';
@@ -21,10 +27,13 @@ export class HttpProxyService {
         this.certificateValidated = false;
         this.deviceName = options.deviceName || 'HPS Server';
         
-        // Multi-part write buffers for handling offset-based writes
-        this.uriBuffer = null;
-        this.headersBuffer = null;
-        this.bodyBuffer = null;
+        // Packet reassembly buffers for handling packet-based writes
+        this.uriPacketBuffer = null;
+        this.headersPacketBuffer = null;
+        this.bodyPacketBuffer = null;
+        
+        // MTU tracking
+        this.negotiatedMtu = HttpProxyService.DEFAULT_MTU;
         
         // Notification state
         this.statusCodeUpdateCallback = null;
@@ -47,21 +56,28 @@ export class HttpProxyService {
             properties: ['write'],
             onWriteRequest: (data, offset, withoutResponse, callback) => {
                 try {
-                    // Handle multi-part writes with offset
-                    if (offset === 0) {
-                        // Start new write
-                        this.uriBuffer = Buffer.from(data);
-                    } else if (this.uriBuffer && offset === this.uriBuffer.length) {
-                        // Append to existing buffer
-                        this.uriBuffer = Buffer.concat([this.uriBuffer, data]);
-                    } else {
-                        // Invalid offset
-                        this.log(`Invalid URI write offset: ${offset}`);
-                        callback(Characteristic.RESULT_INVALID_OFFSET);
+                    // Packet-based protocol: extract header and payload
+                    if (data.length === 0) {
+                        this.log('Received empty URI packet');
+                        callback(Characteristic.RESULT_SUCCESS);
                         return;
                     }
-                    this.uri = this.uriBuffer.toString('utf8');
-                    this.log(`URI set to: ${this.uri} (offset: ${offset}, length: ${data.length})`);
+                    
+                    const header = data[0];
+                    const isFinal = (header & HttpProxyService.FLAG_IS_FINAL) !== 0;
+                    const payload = data.slice(1);
+                    
+                    this.uriPacketBuffer = this.uriPacketBuffer ? 
+                        Buffer.concat([this.uriPacketBuffer, payload]) : payload;
+                    
+                    if (isFinal) {
+                        this.uri = this.uriPacketBuffer.toString('utf8');
+                        this.log(`URI complete: ${this.uri} (${this.uriPacketBuffer.length} bytes)`);
+                        this.uriPacketBuffer = null;
+                    } else {
+                        this.log(`URI packet (not final): ${payload.length} bytes, total: ${this.uriPacketBuffer.length}`);
+                    }
+                    
                     callback(Characteristic.RESULT_SUCCESS);
                 } catch (error) {
                     this.log(`Error setting URI: ${error.message}`);
@@ -78,9 +94,13 @@ export class HttpProxyService {
                 try {
                     const headersString = this.serializeHeaders(this.responseHeaders);
                     const data = Buffer.from(headersString, 'utf8');
-                    // Handle offset for multi-part reads
-                    const responseData = offset < data.length ? data.slice(offset) : Buffer.alloc(0);
-                    this.log(`Sending headers: ${responseData.length} bytes (offset: ${offset}, total: ${data.length})`);
+                    
+                    // Wrap data with packet header (final=true for single packet)
+                    // For multi-packet support, would need to track read state
+                    const packet = Buffer.concat([Buffer.from([HttpProxyService.FLAG_IS_FINAL]), data]);
+                    const responseData = offset < packet.length ? packet.slice(offset) : Buffer.alloc(0);
+                    
+                    this.log(`Sending headers packet: ${responseData.length} bytes (offset: ${offset}, total: ${packet.length})`);
                     callback(Characteristic.RESULT_SUCCESS, responseData);
                 } catch (error) {
                     callback(Characteristic.RESULT_UNLIKELY_ERROR);
@@ -88,21 +108,28 @@ export class HttpProxyService {
             },
             onWriteRequest: (data, offset, withoutResponse, callback) => {
                 try {
-                    // Handle multi-part writes with offset
-                    if (offset === 0) {
-                        // Start new write
-                        this.headersBuffer = Buffer.from(data);
-                    } else if (this.headersBuffer && offset === this.headersBuffer.length) {
-                        // Append to existing buffer
-                        this.headersBuffer = Buffer.concat([this.headersBuffer, data]);
-                    } else {
-                        // Invalid offset
-                        this.log(`Invalid headers write offset: ${offset}`);
-                        callback(Characteristic.RESULT_INVALID_OFFSET);
+                    // Packet-based protocol: extract header and payload
+                    if (data.length === 0) {
+                        this.log('Received empty headers packet');
+                        callback(Characteristic.RESULT_SUCCESS);
                         return;
                     }
-                    this.headers = this.parseHeaders(this.headersBuffer.toString('utf8'));
-                    this.log(`Headers set: ${JSON.stringify(this.headers)} (offset: ${offset}, length: ${data.length})`);
+                    
+                    const header = data[0];
+                    const isFinal = (header & HttpProxyService.FLAG_IS_FINAL) !== 0;
+                    const payload = data.slice(1);
+                    
+                    this.headersPacketBuffer = this.headersPacketBuffer ? 
+                        Buffer.concat([this.headersPacketBuffer, payload]) : payload;
+                    
+                    if (isFinal) {
+                        this.headers = this.parseHeaders(this.headersPacketBuffer.toString('utf8'));
+                        this.log(`Headers complete: ${JSON.stringify(this.headers)} (${this.headersPacketBuffer.length} bytes)`);
+                        this.headersPacketBuffer = null;
+                    } else {
+                        this.log(`Headers packet (not final): ${payload.length} bytes, total: ${this.headersPacketBuffer.length}`);
+                    }
+                    
                     callback(Characteristic.RESULT_SUCCESS);
                 } catch (error) {
                     this.log(`Error setting headers: ${error.message}`);
@@ -142,9 +169,13 @@ export class HttpProxyService {
             onReadRequest: (offset, callback) => {
                 try {
                     const data = this.responseBody || Buffer.alloc(0);
-                    // Handle offset for multi-part reads
-                    const responseData = offset < data.length ? data.slice(offset) : Buffer.alloc(0);
-                    this.log(`Sending body: ${responseData.length} bytes (offset: ${offset}, total: ${data.length})`);
+                    
+                    // Wrap data with packet header (final=true for single packet)
+                    // For multi-packet support, would need to track read state
+                    const packet = Buffer.concat([Buffer.from([HttpProxyService.FLAG_IS_FINAL]), data]);
+                    const responseData = offset < packet.length ? packet.slice(offset) : Buffer.alloc(0);
+                    
+                    this.log(`Sending body packet: ${responseData.length} bytes (offset: ${offset}, total: ${packet.length})`);
                     callback(Characteristic.RESULT_SUCCESS, responseData);
                 } catch (error) {
                     callback(Characteristic.RESULT_UNLIKELY_ERROR);
@@ -152,21 +183,28 @@ export class HttpProxyService {
             },
             onWriteRequest: (data, offset, withoutResponse, callback) => {
                 try {
-                    // Handle multi-part writes with offset
-                    if (offset === 0) {
-                        // Start new write
-                        this.bodyBuffer = Buffer.from(data);
-                    } else if (this.bodyBuffer && offset === this.bodyBuffer.length) {
-                        // Append to existing buffer
-                        this.bodyBuffer = Buffer.concat([this.bodyBuffer, data]);
-                    } else {
-                        // Invalid offset
-                        this.log(`Invalid body write offset: ${offset}`);
-                        callback(Characteristic.RESULT_INVALID_OFFSET);
+                    // Packet-based protocol: extract header and payload
+                    if (data.length === 0) {
+                        this.log('Received empty body packet');
+                        callback(Characteristic.RESULT_SUCCESS);
                         return;
                     }
-                    this.body = this.bodyBuffer;
-                    this.log(`Body set: ${this.body.length} bytes (offset: ${offset}, length: ${data.length})`);
+                    
+                    const header = data[0];
+                    const isFinal = (header & HttpProxyService.FLAG_IS_FINAL) !== 0;
+                    const payload = data.slice(1);
+                    
+                    this.bodyPacketBuffer = this.bodyPacketBuffer ? 
+                        Buffer.concat([this.bodyPacketBuffer, payload]) : payload;
+                    
+                    if (isFinal) {
+                        this.body = this.bodyPacketBuffer;
+                        this.log(`Body complete: ${this.body.length} bytes`);
+                        this.bodyPacketBuffer = null;
+                    } else {
+                        this.log(`Body packet (not final): ${payload.length} bytes, total: ${this.bodyPacketBuffer.length}`);
+                    }
+                    
                     callback(Characteristic.RESULT_SUCCESS);
                 } catch (error) {
                     this.log(`Error setting body: ${error.message}`);
@@ -200,16 +238,19 @@ export class HttpProxyService {
                 const value = this.certificateValidated 
                     ? HPS.HTTPS_SECURITY_CERTIFICATE_VALIDATED 
                     : HPS.HTTPS_SECURITY_CERTIFICATE_NOT_VALIDATED;
-                callback(Characteristic.RESULT_SUCCESS, Buffer.from([value]));
+                // Wrap with packet header
+                const packet = Buffer.from([HttpProxyService.FLAG_IS_FINAL, value]);
+                const responseData = offset < packet.length ? packet.slice(offset) : Buffer.alloc(0);
+                callback(Characteristic.RESULT_SUCCESS, responseData);
             }
         });
     }
     
     resetRequestBuffers() {
-        // Reset write buffers for next request
-        this.uriBuffer = null;
-        this.headersBuffer = null;
-        this.bodyBuffer = null;
+        // Reset packet buffers for next request
+        this.uriPacketBuffer = null;
+        this.headersPacketBuffer = null;
+        this.bodyPacketBuffer = null;
     }
     
     async executeHttpRequest(opcode) {
