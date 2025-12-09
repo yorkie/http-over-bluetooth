@@ -136,7 +136,7 @@ app.post('/api/start', (req, res) => {
         }
 
         const { name } = req.body || {};
-        const deviceName = name || process.env.BLUETOOTH_NAME || 'HPS Server';
+        const deviceName = name || process.env.BLUETOOTH_NAME || 'HPS';
         hpsService = new HttpProxyService({ deviceName });
 
         // Set up event handlers

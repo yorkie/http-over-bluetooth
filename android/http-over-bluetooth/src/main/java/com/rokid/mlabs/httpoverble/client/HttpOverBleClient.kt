@@ -540,6 +540,8 @@ class HttpOverBleClient(private val context: Context) {
             when (uuid) {
                 HttpProxyServiceConstants.HTTP_HEADERS_CHARACTERISTIC_UUID -> {
                     pendingHeaders = HttpResponse.parseHeaders(value)
+                    val utf8String = String(value, Charsets.UTF_8)
+                    Log.d(TAG, "Headers: $utf8String, len: ${utf8String.utf8Size()}")
                     Log.d(TAG, "Read headers: ${value.size} bytes, parsed: ${pendingHeaders}")
                     completedReadCount++
                 }
