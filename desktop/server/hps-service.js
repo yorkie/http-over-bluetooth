@@ -32,6 +32,10 @@ export class HttpProxyService {
         this.headersPacketBuffer = null;
         this.bodyPacketBuffer = null;
         
+        // Pending packetized data for reads (pre-serialized and packetized)
+        this.pendingHeadersData = null;
+        this.pendingBodyData = null;
+        
         // MTU tracking (will be updated when client sends MTU via headers)
         this.negotiatedMtu = 510;  // Use 510 as default max packet size
         this.clientMtu = null;  // Will be set when client notifies MTU
@@ -93,10 +97,21 @@ export class HttpProxyService {
             properties: ['read', 'write'],
             onReadRequest: (offset, callback) => {
                 try {
-                    const headersString = this.serializeHeaders(this.responseHeaders);
-                    const data = Buffer.from(headersString, 'utf8');
-                    this.handlePacketizedRead(data, offset, callback);
+                    // Use pending data if available, otherwise serialize on demand
+                    if (!this.pendingHeadersData) {
+                        const headersString = this.serializeHeaders(this.responseHeaders);
+                        const data = Buffer.from(headersString, 'utf8');
+                        this.pendingHeadersData = this.packetizeData(data);
+                    }
+                    
+                    // Serve from pending data
+                    const responseData = offset < this.pendingHeadersData.length ? 
+                        this.pendingHeadersData.slice(offset) : Buffer.alloc(0);
+                    
+                    this.log(`Serving headers: ${responseData.length} bytes from offset ${offset} (total: ${this.pendingHeadersData.length} bytes)`);
+                    callback(Characteristic.RESULT_SUCCESS, responseData);
                 } catch (error) {
+                    this.log(`Error reading headers: ${error.message}`);
                     callback(Characteristic.RESULT_UNLIKELY_ERROR);
                 }
             },
@@ -174,9 +189,20 @@ export class HttpProxyService {
             properties: ['read', 'write'],
             onReadRequest: (offset, callback) => {
                 try {
-                    const data = this.responseBody || Buffer.alloc(0);
-                    this.handlePacketizedRead(data, offset, callback);
+                    // Use pending data if available, otherwise packetize on demand
+                    if (!this.pendingBodyData) {
+                        const data = this.responseBody || Buffer.alloc(0);
+                        this.pendingBodyData = this.packetizeData(data);
+                    }
+                    
+                    // Serve from pending data
+                    const responseData = offset < this.pendingBodyData.length ? 
+                        this.pendingBodyData.slice(offset) : Buffer.alloc(0);
+                    
+                    this.log(`Serving body: ${responseData.length} bytes from offset ${offset} (total: ${this.pendingBodyData.length} bytes)`);
+                    callback(Characteristic.RESULT_SUCCESS, responseData);
                 } catch (error) {
+                    this.log(`Error reading body: ${error.message}`);
                     callback(Characteristic.RESULT_UNLIKELY_ERROR);
                 }
             },
@@ -238,8 +264,10 @@ export class HttpProxyService {
                     const value = this.certificateValidated 
                         ? HPS.HTTPS_SECURITY_CERTIFICATE_VALIDATED 
                         : HPS.HTTPS_SECURITY_CERTIFICATE_NOT_VALIDATED;
-                    const data = Buffer.from([value]);
-                    this.handlePacketizedRead(data, offset, callback);
+                    // Security is just one byte, wrap it in a packet
+                    const data = Buffer.from([HttpProxyService.FLAG_IS_FINAL, value]);
+                    const responseData = offset < data.length ? data.slice(offset) : Buffer.alloc(0);
+                    callback(Characteristic.RESULT_SUCCESS, responseData);
                 } catch (error) {
                     callback(Characteristic.RESULT_UNLIKELY_ERROR);
                 }
@@ -252,6 +280,10 @@ export class HttpProxyService {
         this.uriPacketBuffer = null;
         this.headersPacketBuffer = null;
         this.bodyPacketBuffer = null;
+        
+        // Reset pending packetized data
+        this.pendingHeadersData = null;
+        this.pendingBodyData = null;
     }
     
     async executeHttpRequest(opcode) {
@@ -298,6 +330,10 @@ export class HttpProxyService {
             
             const response = await axios(config);
             
+            // Clear pending packetized data for new response
+            this.pendingHeadersData = null;
+            this.pendingBodyData = null;
+            
             // Store response
             this.statusCode = response.status;
             this.responseHeaders = response.headers || {};
@@ -338,6 +374,11 @@ export class HttpProxyService {
             
         } catch (error) {
             this.log(`HTTP request error: ${error.message}`);
+            
+            // Clear pending packetized data for error response
+            this.pendingHeadersData = null;
+            this.pendingBodyData = null;
+            
             this.statusCode = 500;
             this.responseBody = Buffer.from(error.message);
             
@@ -372,17 +413,22 @@ export class HttpProxyService {
     }
     
     /**
-     * Splits data into packets for reading.
-     * Returns array of packets, each with header byte indicating if final.
+     * Packetizes data once and returns the complete buffer with all packets.
+     * This buffer can be served across multiple read requests using offsets.
+     * Each packet has a header byte indicating if it's the final packet.
+     * 
+     * Optimization: Instead of re-serializing and re-packetizing on every read,
+     * we create the packetized buffer once and cache it in pendingHeadersData/pendingBodyData.
+     * Subsequent reads just slice from the cached buffer.
      */
-    splitDataIntoPackets(data) {
+    packetizeData(data) {
         const maxPacketSize = this.clientMtu || 510;  // Use client MTU or default 510
         const maxPayload = maxPacketSize - HttpProxyService.ATT_OVERHEAD - HttpProxyService.PACKET_HEADER_SIZE;
         
         if (maxPayload <= 0) {
             this.log(`Invalid packet size configuration: MTU=${maxPacketSize}`);
             // Fallback: single packet with all data
-            return [Buffer.concat([Buffer.from([HttpProxyService.FLAG_IS_FINAL]), data])];
+            return Buffer.concat([Buffer.from([HttpProxyService.FLAG_IS_FINAL]), data]);
         }
         
         const packets = [];
@@ -401,31 +447,10 @@ export class HttpProxyService {
             offset += payloadSize;
         }
         
-        this.log(`Split data into ${packets.length} packet(s), max payload: ${maxPayload} bytes`);
-        return packets;
-    }
-    
-    /**
-     * Handles read requests with multi-packet support.
-     * Serves packets based on offset, properly handling packet boundaries.
-     */
-    handlePacketizedRead(data, offset, callback) {
-        try {
-            const packets = this.splitDataIntoPackets(data);
-            
-            // Concatenate all packets
-            const allPacketsData = Buffer.concat(packets);
-            
-            // Serve data from offset
-            const responseData = offset < allPacketsData.length ? 
-                allPacketsData.slice(offset) : Buffer.alloc(0);
-            
-            this.log(`Serving ${responseData.length} bytes from offset ${offset} (total: ${allPacketsData.length} bytes, ${packets.length} packets)`);
-            callback(Characteristic.RESULT_SUCCESS, responseData);
-        } catch (error) {
-            this.log(`Error in packetized read: ${error.message}`);
-            callback(Characteristic.RESULT_UNLIKELY_ERROR);
-        }
+        // Concatenate all packets into a single buffer
+        const allPacketsData = Buffer.concat(packets);
+        this.log(`Packetized ${data.length} bytes into ${packets.length} packet(s), total size: ${allPacketsData.length} bytes (max payload: ${maxPayload})`);
+        return allPacketsData;
     }
     
     serializeHeaders(headers) {
