@@ -104,11 +104,20 @@ export class HttpProxyService {
                         this.pendingHeadersData = this.packetizeData(data);
                     }
                     
-                    // Serve from pending data
-                    const responseData = offset < this.pendingHeadersData.length ? 
-                        this.pendingHeadersData.slice(offset) : Buffer.alloc(0);
+                    // Serve from pending data, limited to MTU size
+                    const mtu = this.clientMtu || 510;
+                    const maxResponseSize = mtu;  // BLE stack handles ATT overhead
                     
-                    this.log(`Serving headers: ${responseData.length} bytes from offset ${offset} (total: ${this.pendingHeadersData.length} bytes)`);
+                    if (offset >= this.pendingHeadersData.length) {
+                        callback(Characteristic.RESULT_SUCCESS, Buffer.alloc(0));
+                        return;
+                    }
+                    
+                    const remainingBytes = this.pendingHeadersData.length - offset;
+                    const responseSize = Math.min(remainingBytes, maxResponseSize);
+                    const responseData = this.pendingHeadersData.slice(offset, offset + responseSize);
+                    
+                    this.log(`Serving headers: ${responseData.length} bytes from offset ${offset} (total: ${this.pendingHeadersData.length} bytes, MTU: ${mtu})`);
                     callback(Characteristic.RESULT_SUCCESS, responseData);
                 } catch (error) {
                     this.log(`Error reading headers: ${error.message}`);
@@ -195,11 +204,20 @@ export class HttpProxyService {
                         this.pendingBodyData = this.packetizeData(data);
                     }
                     
-                    // Serve from pending data
-                    const responseData = offset < this.pendingBodyData.length ? 
-                        this.pendingBodyData.slice(offset) : Buffer.alloc(0);
+                    // Serve from pending data, limited to MTU size
+                    const mtu = this.clientMtu || 510;
+                    const maxResponseSize = mtu;  // BLE stack handles ATT overhead
                     
-                    this.log(`Serving body: ${responseData.length} bytes from offset ${offset} (total: ${this.pendingBodyData.length} bytes)`);
+                    if (offset >= this.pendingBodyData.length) {
+                        callback(Characteristic.RESULT_SUCCESS, Buffer.alloc(0));
+                        return;
+                    }
+                    
+                    const remainingBytes = this.pendingBodyData.length - offset;
+                    const responseSize = Math.min(remainingBytes, maxResponseSize);
+                    const responseData = this.pendingBodyData.slice(offset, offset + responseSize);
+                    
+                    this.log(`Serving body: ${responseData.length} bytes from offset ${offset} (total: ${this.pendingBodyData.length} bytes, MTU: ${mtu})`);
                     callback(Characteristic.RESULT_SUCCESS, responseData);
                 } catch (error) {
                     this.log(`Error reading body: ${error.message}`);
@@ -266,7 +284,18 @@ export class HttpProxyService {
                         : HPS.HTTPS_SECURITY_CERTIFICATE_NOT_VALIDATED;
                     // Security is just one byte, wrap it in a packet
                     const data = Buffer.from([HttpProxyService.FLAG_IS_FINAL, value]);
-                    const responseData = offset < data.length ? data.slice(offset) : Buffer.alloc(0);
+                    
+                    if (offset >= data.length) {
+                        callback(Characteristic.RESULT_SUCCESS, Buffer.alloc(0));
+                        return;
+                    }
+                    
+                    // Limit to MTU size (though security is only 2 bytes, keep consistent)
+                    const mtu = this.clientMtu || 510;
+                    const remainingBytes = data.length - offset;
+                    const responseSize = Math.min(remainingBytes, mtu);
+                    const responseData = data.slice(offset, offset + responseSize);
+                    
                     callback(Characteristic.RESULT_SUCCESS, responseData);
                 } catch (error) {
                     callback(Characteristic.RESULT_UNLIKELY_ERROR);
