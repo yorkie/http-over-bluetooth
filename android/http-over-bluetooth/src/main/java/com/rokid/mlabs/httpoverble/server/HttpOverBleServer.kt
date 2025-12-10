@@ -67,6 +67,10 @@ class HttpOverBleServer(private val context: Context) {
     companion object {
         private const val TAG = "HttpOverBleServer"
         private const val HTTP_TIMEOUT_SECONDS = 30L
+        private const val DEFAULT_MTU = 23
+        private const val ATT_OVERHEAD = 3
+        private const val PACKET_HEADER_SIZE = 1
+        private const val FLAG_IS_FINAL: Byte = 0x01
     }
     
     private val bluetoothManager: BluetoothManager = 
@@ -105,7 +109,11 @@ class HttpOverBleServer(private val context: Context) {
     private data class ClientRequestData(
         var uri: String? = null,
         var headers: Map<String, String> = emptyMap(),
-        var body: ByteArray? = null
+        var body: ByteArray? = null,
+        // Buffers for multi-part writes
+        var uriBuffer: ByteArray? = null,
+        var headersBuffer: ByteArray? = null,
+        var bodyBuffer: ByteArray? = null
     ) {
         override fun equals(other: Any?): Boolean {
             if (this === other) return true
@@ -117,6 +125,18 @@ class HttpOverBleServer(private val context: Context) {
                 if (other.body == null) return false
                 if (!body.contentEquals(other.body)) return false
             } else if (other.body != null) return false
+            if (uriBuffer != null) {
+                if (other.uriBuffer == null) return false
+                if (!uriBuffer.contentEquals(other.uriBuffer)) return false
+            } else if (other.uriBuffer != null) return false
+            if (headersBuffer != null) {
+                if (other.headersBuffer == null) return false
+                if (!headersBuffer.contentEquals(other.headersBuffer)) return false
+            } else if (other.headersBuffer != null) return false
+            if (bodyBuffer != null) {
+                if (other.bodyBuffer == null) return false
+                if (!bodyBuffer.contentEquals(other.bodyBuffer)) return false
+            } else if (other.bodyBuffer != null) return false
             return true
         }
 
@@ -124,6 +144,9 @@ class HttpOverBleServer(private val context: Context) {
             var result = uri?.hashCode() ?: 0
             result = 31 * result + headers.hashCode()
             result = 31 * result + (body?.contentHashCode() ?: 0)
+            result = 31 * result + (uriBuffer?.contentHashCode() ?: 0)
+            result = 31 * result + (headersBuffer?.contentHashCode() ?: 0)
+            result = 31 * result + (bodyBuffer?.contentHashCode() ?: 0)
             return result
         }
     }
@@ -364,28 +387,97 @@ class HttpOverBleServer(private val context: Context) {
             
             when (characteristic.uuid) {
                 HttpProxyServiceConstants.URI_CHARACTERISTIC_UUID -> {
-                    clientData.uri = String(value, Charsets.UTF_8)
-                    Log.d(TAG, "Received URI: ${clientData.uri}")
+                    // Packet-based protocol: extract header and payload
+                    if (value.isEmpty()) {
+                        Log.w(TAG, "Received empty URI packet")
+                        if (responseNeeded) {
+                            gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
+                        }
+                        return
+                    }
+                    
+                    val header = value[0]
+                    val isFinal = (header.toInt() and FLAG_IS_FINAL.toInt()) != 0
+                    val payload = if (value.size > 1) value.copyOfRange(1, value.size) else byteArrayOf()
+                    
+                    clientData.uriBuffer = if (clientData.uriBuffer == null) {
+                        payload
+                    } else {
+                        clientData.uriBuffer!! + payload
+                    }
+                    
+                    if (isFinal) {
+                        clientData.uri = String(clientData.uriBuffer!!, Charsets.UTF_8)
+                        Log.d(TAG, "Received complete URI: ${clientData.uri} (${clientData.uriBuffer!!.size} bytes)")
+                    } else {
+                        Log.d(TAG, "Received URI packet (not final): ${payload.size} bytes, total: ${clientData.uriBuffer!!.size}")
+                    }
                 }
                 HttpProxyServiceConstants.HTTP_HEADERS_CHARACTERISTIC_UUID -> {
-                    clientData.headers = HttpResponse.parseHeaders(value)
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        characteristic.setValue(value)
-                    } else {
-                        @Suppress("DEPRECATION")
-                        characteristic.value = value
+                    // Packet-based protocol: extract header and payload
+                    if (value.isEmpty()) {
+                        Log.w(TAG, "Received empty headers packet")
+                        if (responseNeeded) {
+                            gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
+                        }
+                        return
                     }
-                    Log.d(TAG, "Received headers: ${clientData.headers}")
+                    
+                    val header = value[0]
+                    val isFinal = (header.toInt() and FLAG_IS_FINAL.toInt()) != 0
+                    val payload = if (value.size > 1) value.copyOfRange(1, value.size) else byteArrayOf()
+                    
+                    clientData.headersBuffer = if (clientData.headersBuffer == null) {
+                        payload
+                    } else {
+                        clientData.headersBuffer!! + payload
+                    }
+                    
+                    if (isFinal) {
+                        clientData.headers = HttpResponse.parseHeaders(clientData.headersBuffer!!)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            characteristic.setValue(clientData.headersBuffer!!)
+                        } else {
+                            @Suppress("DEPRECATION")
+                            characteristic.value = clientData.headersBuffer!!
+                        }
+                        Log.d(TAG, "Received complete headers: ${clientData.headers} (${clientData.headersBuffer!!.size} bytes)")
+                    } else {
+                        Log.d(TAG, "Received headers packet (not final): ${payload.size} bytes, total: ${clientData.headersBuffer!!.size}")
+                    }
                 }
                 HttpProxyServiceConstants.HTTP_ENTITY_BODY_CHARACTERISTIC_UUID -> {
-                    clientData.body = value
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        characteristic.setValue(value)
-                    } else {
-                        @Suppress("DEPRECATION")
-                        characteristic.value = value
+                    // Packet-based protocol: extract header and payload
+                    if (value.isEmpty()) {
+                        Log.w(TAG, "Received empty body packet")
+                        if (responseNeeded) {
+                            gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
+                        }
+                        return
                     }
-                    Log.d(TAG, "Received body: ${value.size} bytes")
+                    
+                    val header = value[0]
+                    val isFinal = (header.toInt() and FLAG_IS_FINAL.toInt()) != 0
+                    val payload = if (value.size > 1) value.copyOfRange(1, value.size) else byteArrayOf()
+                    
+                    clientData.bodyBuffer = if (clientData.bodyBuffer == null) {
+                        payload
+                    } else {
+                        clientData.bodyBuffer!! + payload
+                    }
+                    
+                    if (isFinal) {
+                        clientData.body = clientData.bodyBuffer
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            characteristic.setValue(clientData.bodyBuffer!!)
+                        } else {
+                            @Suppress("DEPRECATION")
+                            characteristic.value = clientData.bodyBuffer!!
+                        }
+                        Log.d(TAG, "Received complete body: ${clientData.body?.size} bytes")
+                    } else {
+                        Log.d(TAG, "Received body packet (not final): ${payload.size} bytes, total: ${clientData.bodyBuffer!!.size}")
+                    }
                 }
                 HttpProxyServiceConstants.HTTP_CONTROL_POINT_CHARACTERISTIC_UUID -> {
                     if (value.isNotEmpty()) {
@@ -446,6 +538,10 @@ class HttpOverBleServer(private val context: Context) {
     private fun handleControlPoint(device: BluetoothDevice, opcode: Byte, clientData: ClientRequestData) {
         if (opcode == HttpProxyServiceConstants.OPCODE_HTTP_REQUEST_CANCEL) {
             Log.d(TAG, "Request cancelled by client")
+            // Reset buffers on cancel
+            clientData.uriBuffer = null
+            clientData.headersBuffer = null
+            clientData.bodyBuffer = null
             return
         }
         
@@ -544,6 +640,13 @@ class HttpOverBleServer(private val context: Context) {
             
             Log.d(TAG, "HTTP response: ${response.code}")
             
+            // Reset buffers for next request
+            clientRequestData[device.address]?.let { clientData ->
+                clientData.uriBuffer = null
+                clientData.headersBuffer = null
+                clientData.bodyBuffer = null
+            }
+            
         } catch (e: Exception) {
             Log.e(TAG, "HTTP request failed", e)
             callback?.onError(HttpOverBleServerError.HttpRequestFailed("HTTP request failed: ${e.message}"))
@@ -557,6 +660,13 @@ class HttpOverBleServer(private val context: Context) {
                 certificateValidated = false
             )
             sendResponse(device, errorResponse)
+            
+            // Reset buffers for next request even on error
+            clientRequestData[device.address]?.let { clientData ->
+                clientData.uriBuffer = null
+                clientData.headersBuffer = null
+                clientData.bodyBuffer = null
+            }
         }
     }
     
@@ -571,36 +681,42 @@ class HttpOverBleServer(private val context: Context) {
                 statusCodeCharacteristic.value = statusCodeBytes
             }
             
+            // For now, wrap data with packet header (final=true) as single packet
+            // TODO: Implement multi-packet support with MTU-based splitting
             val headerBytes = response.headers.entries
                 .joinToString("\r\n") { "${it.key}: ${it.value}" }
                 .toByteArray(Charsets.UTF_8)
+            val headerPacket = byteArrayOf(FLAG_IS_FINAL) + headerBytes
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                headersCharacteristic.setValue(headerBytes)
+                headersCharacteristic.setValue(headerPacket)
             } else {
                 @Suppress("DEPRECATION")
-                headersCharacteristic.value = headerBytes
+                headersCharacteristic.value = headerPacket
             }
             
             response.body?.let { body ->
+                val bodyPacket = byteArrayOf(FLAG_IS_FINAL) + body
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    bodyCharacteristic.setValue(body)
+                    bodyCharacteristic.setValue(bodyPacket)
                 } else {
                     @Suppress("DEPRECATION")
-                    bodyCharacteristic.value = body
+                    bodyCharacteristic.value = bodyPacket
                 }
             }
             
+            // Security characteristic with packet header
             if (response.isHttps) {
                 val securityValue = if (response.certificateValidated) {
                     HttpProxyServiceConstants.HTTPS_SECURITY_CERTIFICATE_VALIDATED
                 } else {
                     HttpProxyServiceConstants.HTTPS_SECURITY_CERTIFICATE_NOT_VALIDATED
                 }
+                val securityPacket = byteArrayOf(FLAG_IS_FINAL, securityValue)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    httpsSecurityCharacteristic.setValue(byteArrayOf(securityValue))
+                    httpsSecurityCharacteristic.setValue(securityPacket)
                 } else {
                     @Suppress("DEPRECATION")
-                    httpsSecurityCharacteristic.value = byteArrayOf(securityValue)
+                    httpsSecurityCharacteristic.value = securityPacket
                 }
             }
             
@@ -613,6 +729,35 @@ class HttpOverBleServer(private val context: Context) {
             Log.e(TAG, "Failed to send response", e)
             callback?.onError(HttpOverBleServerError.ResponseSendFailed("Failed to send response: ${e.message}"))
         }
+    }
+    
+    /**
+     * Splits data into packets with header bytes for packet-based protocol.
+     */
+    private fun splitIntoPackets(data: ByteArray, mtu: Int = DEFAULT_MTU): List<ByteArray> {
+        val maxPacketPayload = mtu - ATT_OVERHEAD - PACKET_HEADER_SIZE
+        if (maxPacketPayload <= 0) {
+            Log.w(TAG, "Invalid MTU configuration: mtu=$mtu")
+            return listOf(byteArrayOf(FLAG_IS_FINAL) + data)  // Fallback
+        }
+        
+        val packets = mutableListOf<ByteArray>()
+        var offset = 0
+        
+        while (offset < data.size) {
+            val remainingBytes = data.size - offset
+            val payloadSize = minOf(remainingBytes, maxPacketPayload)
+            val isFinal = (offset + payloadSize) >= data.size
+            
+            val header = if (isFinal) FLAG_IS_FINAL else 0x00.toByte()
+            val payload = data.copyOfRange(offset, offset + payloadSize)
+            val packet = byteArrayOf(header) + payload
+            
+            packets.add(packet)
+            offset += payloadSize
+        }
+        
+        return packets
     }
     
     /**

@@ -70,6 +70,14 @@ class HttpOverBleClient(private val context: Context) {
         private const val SCAN_TIMEOUT_MS = 10000L
         private const val CONNECTION_TIMEOUT_MS = 30000L
         private const val REQUEST_TIMEOUT_MS = 60000L
+        private const val DEFAULT_MTU = 23  // Minimum guaranteed MTU for BLE
+        private const val REQUESTED_MTU = 510  // Request 510 MTU for better throughput
+        private const val ATT_OVERHEAD = 3  // ATT protocol overhead (1 byte opcode + 2 bytes handle)
+        private const val PACKET_HEADER_SIZE = 1  // 1 byte header: bit 0 = is_final flag
+        private const val MIN_PAYLOAD_SIZE = DEFAULT_MTU - ATT_OVERHEAD  // 20 bytes
+        
+        // Packet header flags
+        private const val FLAG_IS_FINAL: Byte = 0x01  // Bit 0: 1 = final packet, 0 = more packets
     }
     
     private val bluetoothManager: BluetoothManager = 
@@ -102,6 +110,14 @@ class HttpOverBleClient(private val context: Context) {
     private var expectedReadCount: Int = 0
     @Volatile
     private var completedReadCount: Int = 0
+    
+    // MTU tracking (starts with minimum guaranteed MTU for BLE)
+    @Volatile
+    private var negotiatedMtu: Int = DEFAULT_MTU
+    
+    // Packet reassembly buffers for reading
+    private var headersPacketBuffer: ByteArray? = null
+    private var bodyPacketBuffer: ByteArray? = null
     
     // Write queue for sequential characteristic writes
     private val writeQueue = ConcurrentLinkedQueue<WriteOperation>()
@@ -247,24 +263,44 @@ class HttpOverBleClient(private val context: Context) {
                 pendingBody = null
                 pendingHttps = request.isHttps
                 pendingCertValidated = false
+                headersPacketBuffer = null
+                bodyPacketBuffer = null
                 
-                // Write URI
+                // Write URI with packet splitting
                 uriCharacteristic?.let { characteristic ->
                     val uriBytes = request.uri.toByteArray(Charsets.UTF_8)
-                    queueWrite(characteristic, uriBytes)
-                }
-                
-                // Write Headers if present
-                if (request.headers.isNotEmpty()) {
-                    headersCharacteristic?.let { characteristic ->
-                        queueWrite(characteristic, request.serializeHeaders())
+                    val packets = splitIntoPackets(uriBytes)
+                    Log.d(TAG, "Writing URI in ${packets.size} packet(s)")
+                    packets.forEach { packet ->
+                        queueWrite(characteristic, packet)
                     }
                 }
                 
-                // Write Body if present
+                // Write Headers with packet splitting if present
+                // Include MTU in headers for server to use
+                headersCharacteristic?.let { characteristic ->
+                    val headersWithMtu = request.headers.toMutableMap()
+                    headersWithMtu["X-BLE-MTU"] = negotiatedMtu.toString()
+                    
+                    val headerString = headersWithMtu.entries
+                        .joinToString("\r\n") { "${it.key}: ${it.value}" }
+                    val headerBytes = headerString.toByteArray(Charsets.UTF_8)
+                    
+                    val packets = splitIntoPackets(headerBytes)
+                    Log.d(TAG, "Writing headers (with MTU=$negotiatedMtu) in ${packets.size} packet(s)")
+                    packets.forEach { packet ->
+                        queueWrite(characteristic, packet)
+                    }
+                }
+                
+                // Write Body with packet splitting if present
                 request.body?.let { body ->
                     bodyCharacteristic?.let { characteristic ->
-                        queueWrite(characteristic, body)
+                        val packets = splitIntoPackets(body)
+                        Log.d(TAG, "Writing body in ${packets.size} packet(s)")
+                        packets.forEach { packet ->
+                            queueWrite(characteristic, packet)
+                        }
                     }
                 }
                 
@@ -384,6 +420,15 @@ class HttpOverBleClient(private val context: Context) {
             }
         }
         
+        override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                negotiatedMtu = mtu
+                Log.d(TAG, "MTU changed to: $mtu")
+            } else {
+                Log.w(TAG, "MTU change failed with status: $status, using default MTU: $negotiatedMtu")
+            }
+        }
+        
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 Log.e(TAG, "Service discovery failed with status: $status")
@@ -430,6 +475,14 @@ class HttpOverBleClient(private val context: Context) {
                     @Suppress("DEPRECATION")
                     gatt.writeDescriptor(descriptor)
                 }
+            }
+            
+            // Request larger MTU for better throughput
+            val mtuRequested = gatt.requestMtu(REQUESTED_MTU)
+            if (mtuRequested) {
+                Log.d(TAG, "Requested MTU: $REQUESTED_MTU")
+            } else {
+                Log.w(TAG, "Failed to request MTU, using default: $negotiatedMtu")
             }
             
             isConnected = true
@@ -492,7 +545,7 @@ class HttpOverBleClient(private val context: Context) {
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 handleCharacteristicRead(characteristic.uuid, characteristic.value)
             } else {
-                Log.e(TAG, "Characteristic read failed: ${characteristic.uuid}")
+                Log.e(TAG, "Characteristic read failed: ${characteristic.uuid}, status: $status")
             }
             
             // Process next item in queue
@@ -510,7 +563,7 @@ class HttpOverBleClient(private val context: Context) {
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 handleCharacteristicRead(characteristic.uuid, value)
             } else {
-                Log.e(TAG, "Characteristic read failed: ${characteristic.uuid}")
+                Log.e(TAG, "Characteristic read failed: ${characteristic.uuid}, status: $status")
             }
             
             // Process next item in queue
@@ -518,24 +571,56 @@ class HttpOverBleClient(private val context: Context) {
         }
         
         private fun handleCharacteristicRead(uuid: java.util.UUID, value: ByteArray) {
+            // Packet-based protocol: each read may contain a packet with header
+            // Keep reading until we receive a packet with the "final" flag set
             when (uuid) {
                 HttpProxyServiceConstants.HTTP_HEADERS_CHARACTERISTIC_UUID -> {
-                    pendingHeaders = HttpResponse.parseHeaders(value)
-                    completedReadCount++
+                    val (accumulated, isFinal) = reassemblePacket(headersPacketBuffer, value)
+                    headersPacketBuffer = accumulated
+                    
+                    if (isFinal && accumulated != null) {
+                        pendingHeaders = HttpResponse.parseHeaders(accumulated)
+                        Log.d(TAG, "Read complete headers: ${accumulated.size} bytes, parsed: ${pendingHeaders}")
+                        headersPacketBuffer = null  // Clear for next read
+                        completedReadCount++
+                    } else if (!isFinal) {
+                        Log.d(TAG, "Headers packet not final, continue reading: accumulated=${accumulated?.size ?: 0} bytes")
+                        // Queue another read to get the next packet
+                        headersCharacteristic?.let { queueRead(it) }
+                    }
                 }
                 HttpProxyServiceConstants.HTTP_ENTITY_BODY_CHARACTERISTIC_UUID -> {
-                    pendingBody = value
-                    completedReadCount++
+                    val (accumulated, isFinal) = reassemblePacket(bodyPacketBuffer, value)
+                    bodyPacketBuffer = accumulated
+                    
+                    if (isFinal && accumulated != null) {
+                        pendingBody = accumulated
+                        Log.d(TAG, "Read complete body: ${accumulated.size} bytes")
+                        bodyPacketBuffer = null  // Clear for next read
+                        completedReadCount++
+                    } else if (!isFinal) {
+                        Log.d(TAG, "Body packet not final, continue reading: accumulated=${accumulated?.size ?: 0} bytes")
+                        // Queue another read to get the next packet
+                        bodyCharacteristic?.let { queueRead(it) }
+                    }
                 }
                 HttpProxyServiceConstants.HTTPS_SECURITY_CHARACTERISTIC_UUID -> {
-                    pendingCertValidated = value.isNotEmpty() && 
-                        value[0] == HttpProxyServiceConstants.HTTPS_SECURITY_CERTIFICATE_VALIDATED
+                    // Security characteristic is always small, single packet
+                    val (accumulated, _) = reassemblePacket(null, value)
+                    pendingCertValidated = accumulated?.isNotEmpty() == true && 
+                        accumulated[0] == HttpProxyServiceConstants.HTTPS_SECURITY_CERTIFICATE_VALIDATED
+                    Log.d(TAG, "Read HTTPS security: certified=$pendingCertValidated")
                     completedReadCount++
+                }
+                else -> {
+                    Log.w(TAG, "Read unknown characteristic: $uuid, ignoring")
+                    // Don't increment completedReadCount for unknown characteristics
                 }
             }
             
             // Check if we have all response data
             if (pendingStatusCode > 0 && completedReadCount == expectedReadCount && expectedReadCount > 0) {
+                Log.d(TAG, "All response data received, creating response object")
                 val response = HttpResponse(
                     statusCode = pendingStatusCode,
                     headers = pendingHeaders,
@@ -565,6 +650,68 @@ class HttpOverBleClient(private val context: Context) {
                 queueRead(it)
                 expectedReadCount++
             }
+        }
+    }
+    
+    /**
+     * Splits data into packets with header bytes indicating if it's the final packet.
+     * Packet format: [header:1 byte][payload:N bytes]
+     * Header byte bit 0: 1 = final packet, 0 = more packets coming
+     */
+    private fun splitIntoPackets(data: ByteArray): List<ByteArray> {
+        val maxPacketPayload = negotiatedMtu - ATT_OVERHEAD - PACKET_HEADER_SIZE
+        if (maxPacketPayload <= 0) {
+            Log.e(TAG, "Invalid MTU configuration: negotiatedMtu=$negotiatedMtu")
+            return listOf(byteArrayOf(FLAG_IS_FINAL) + data)  // Fallback: send as single packet
+        }
+        
+        val packets = mutableListOf<ByteArray>()
+        var offset = 0
+        
+        while (offset < data.size) {
+            val remainingBytes = data.size - offset
+            val payloadSize = minOf(remainingBytes, maxPacketPayload)
+            val isFinal = (offset + payloadSize) >= data.size
+            
+            val header = if (isFinal) FLAG_IS_FINAL else 0x00.toByte()
+            val payload = data.copyOfRange(offset, offset + payloadSize)
+            val packet = byteArrayOf(header) + payload
+            
+            packets.add(packet)
+            offset += payloadSize
+            
+            Log.d(TAG, "Created packet: offset=$offset, payloadSize=$payloadSize, isFinal=$isFinal, totalPackets=${packets.size}")
+        }
+        
+        return packets
+    }
+    
+    /**
+     * Reassembles a received packet, accumulating data until final packet is received.
+     * Returns the complete data when final packet is received, null otherwise.
+     */
+    private fun reassemblePacket(buffer: ByteArray?, newPacket: ByteArray): Pair<ByteArray?, Boolean> {
+        if (newPacket.isEmpty()) {
+            Log.w(TAG, "Received empty packet")
+            return Pair(buffer, false)
+        }
+        
+        val header = newPacket[0]
+        val isFinal = (header.toInt() and FLAG_IS_FINAL.toInt()) != 0
+        val payload = newPacket.copyOfRange(1, newPacket.size)
+        
+        val accumulated = if (buffer == null) {
+            payload
+        } else {
+            buffer + payload
+        }
+        
+        Log.d(TAG, "Reassembled packet: payloadSize=${payload.size}, isFinal=$isFinal, totalSize=${accumulated.size}")
+        
+        return if (isFinal) {
+            Pair(accumulated, true)  // Complete
+        } else {
+            Pair(accumulated, false)  // More packets coming
         }
     }
     
